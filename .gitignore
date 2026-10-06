@@ -1,0 +1,17 @@
+node_modules/
+*.vsix
+dist/
+__pycache__/
+.pytest_cache/
+.venv/
+.codex/
+.vscode/
+*.out
+*.err
+*.log
+.env
+.env.*
+auth.json
+token.json
+*.pem
+*.key

@@ -1,0 +1,8 @@
+{
+  "name": "slurm-agent-backend",
+  "version": "0.1.0",
+  "private": true,
+  "engines": { "node": ">=22 <23" },
+  "scripts": { "test": "node --test test/*.test.cjs" },
+  "dependencies": { "ws": "8.22.0" }
+}
