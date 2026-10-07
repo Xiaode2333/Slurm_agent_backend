@@ -68,6 +68,29 @@ There is no measured browser rendering or model-generation speedup claim;
 [performance evidence](performance.md) separates the loaded old backend from
 fresh synthetic state.
 
+## Split agent services and extension packaging, 2026-10-07
+
+Published separate agent-partition Tunnel/server launchers and their local check
+entrypoint. Both request one CPU, 8 GiB, seven days and no GPUs. Regression tests
+cover independent tmux identities, service exit status/signal propagation,
+cleanup and rejection of historical log entries as live ownership evidence.
+An idle admin window no longer retains a dead Tunnel allocation.
+
+Connector installation repairs mismatched official extension installations,
+reports the actual in-memory extension version, and can repackage/retry a VSIX
+when installation explicitly reports VS Code incompatibility. Packaging tests
+verify both engine manifests against a simulated VS Code 1.100.2, retain the
+minimum version declaration, remove obsolete archive entries and preserve the
+standard VSIX XML namespace. Permission failures are not retried.
+
+The complete local check passed 27 Node tests, 15 Python tests and all shell,
+JavaScript and Python syntax/compilation checks. Both launcher `check` commands
+passed; the Codex CLI emitted a nonfatal stale temporary-directory cleanup
+warning. No new Slurm jobs or GitHub Actions were used for this publication.
+Live sidebar connection after a window reload remains unverified for these
+changes; installed CLI extension versions alone do not prove the loaded
+window's version or connection.
+
 ## Remaining limits
 
 Native UI pagination beyond the original environment's small history list and

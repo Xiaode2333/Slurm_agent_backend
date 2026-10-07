@@ -28,6 +28,59 @@ def test_codex_backend_resource_and_lifecycle_contract():
         subprocess.run(["bash", "-n", str(ROOT / entry)], check=True)
 
 
+@pytest.mark.parametrize('script', ['agent_tmux_tunnel.sh', 'agent_tmux_server.sh'])
+def test_agent_partition_resource_contract(script):
+    source = (ROOT / 'scripts' / script).read_text()
+    for directive in ('--partition=agent', '--ntasks=1', '--cpus-per-task=1',
+                      '--mem=8G', '--time=7-00:00:00', '--open-mode=append'):
+        assert f'#SBATCH {directive}' in source.splitlines()
+    assert '#SBATCH --gres' not in source
+    assert 'tmux_name="agent-${SLURM_JOB_ID}"' in source
+    assert 'trap cleanup EXIT' in source
+    check = (ROOT / 'scripts/agent_tmux.sh').read_text()
+    assert 'sbatch scripts/agent_tmux_tunnel.sh scripts/agent_tmux_server.sh' not in check
+
+
+@pytest.mark.parametrize('script,pane,expected', [
+    ('agent_tmux_tunnel.sh', '1:0:', 0),
+    ('agent_tmux_tunnel.sh', '1:7:', 7),
+    ('agent_tmux_tunnel.sh', '1::15', 143),
+    ('agent_tmux_server.sh', '', 7),
+])
+def test_agent_launcher_propagates_service_exit(tmp_path, script, pane, expected):
+    scripts = tmp_path / 'scripts'
+    component = scripts / 'codex_backend'
+    component.mkdir(parents=True)
+    fake_bin = tmp_path / 'bin'
+    fake_bin.mkdir()
+    (component / 'tunnel-window.sh').write_text('exit 0\n')
+    (component / 'setup.sh').write_text('printf "%s\\n" "$SLURM_SUBMIT_DIR/scripts/codex_backend"\n')
+    (component / 'node-path').write_text(str(fake_bin / 'node') + '\n')
+    (component / 'server-window.sh').write_text('printf "7\\n" > "$6"\n')
+    (fake_bin / 'node').write_text('#!/bin/bash\nprintf "%s\\n" "$SLURM_SUBMIT_DIR/sqlite"\n')
+    (fake_bin / 'node').chmod(0o755)
+    tmux = fake_bin / 'tmux'
+    tmux.write_text(
+        '#!/bin/bash\nset -eu\nshift 2\n'
+        'if [[ "$1" == display-message ]]; then printf "%s\\n" "$TEST_PANE"; fi\n'
+        'if [[ "$1" == new-window && "$*" == *backend* ]]; then bash -c "${@: -1}"; fi\n'
+        'if [[ "$1" == kill-server ]]; then touch "$SLURM_SUBMIT_DIR/cleaned"; fi\n'
+    )
+    tmux.chmod(0o755)
+    launcher = scripts / script
+    launcher.write_text((ROOT / 'scripts' / script).read_text())
+    # A historical tunnel URL must not override this pane's exit status.
+    (tmp_path / 'vscode_slurm.out').write_text('Tunnel: oldtunnel\n')
+    result = subprocess.run(['bash', str(launcher)], capture_output=True, text=True, timeout=10,
+        env={**os.environ, 'SLURM_SUBMIT_DIR': str(tmp_path), 'SLURM_TMPDIR': str(tmp_path),
+             'SLURM_JOB_ID': 'fixture', 'TEST_PANE': pane,
+             'PATH': str(fake_bin) + ':' + os.environ['PATH']})
+    assert result.returncode == expected, result.stdout + result.stderr
+    assert (tmp_path / 'cleaned').exists()
+    log = 'vscode_slurm.out' if 'tunnel' in script else 'agent_tmux_server.out'
+    assert f'allocation_exit={expected}' in (tmp_path / log).read_text()
+
+
 def test_codex_connector_dependency_contract():
     package = json.loads((ROOT / "scripts/codex_backend/package.json").read_text())
     lock = json.loads((ROOT / "scripts/codex_backend/package-lock.json").read_text())

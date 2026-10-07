@@ -79,6 +79,52 @@ bash /absolute/Slurm_agent_backend/scripts/connect_codex_backend.sh status
 后端不明确时，使用 `CODEX_BACKEND_JOB=JOB_ID` 指定。`status` 的 `window.verified=true`
 表示当前窗口有活跃 relay 证据，`backendAvailable=true` 单独不能证明侧边栏已经连接。
 
+## agent 分区：Tunnel 与后端分开运行
+
+新增的三个 `agent_tmux*` 脚本适用于提供 `agent` CPU 分区的站点。
+每个作业请求 1 CPU、8 GiB、7 天、零 GPU；两个作业须分别提交，
+不能把第二个脚本作为第一个 `sbatch` 命令的参数：
+
+```bash
+bash scripts/agent_tmux.sh check
+sbatch scripts/agent_tmux_tunnel.sh
+sbatch scripts/agent_tmux_server.sh
+```
+
+站点 account/QOS 要求仍通过 `sbatch` 参数提供。两作业必须运行在同一节点，
+否则 Tunnel 无法访问后端的 Unix socket；必要时在第二次提交中指定
+`--nodelist=FIRST_JOB_NODE`，以实际获配节点为准，不保证第二个作业立即启动。
+从仓库根目录提交，分别查看 `agent_tmux_tunnel_JOB_ID.out` 和
+`agent_tmux_server_JOB_ID.out`。Tunnel 详细输出追加到 `vscode_slurm.out`，
+后端详细输出追加到 `agent_tmux_server.out`。
+
+进入对应计算节点后，用作业 ID 选择独立 tmux server：
+
+```bash
+tmux -L agent-TUNNEL_JOB_ID list-windows -t agent
+tmux -L agent-SERVER_JOB_ID list-windows -t agent
+tmux -L agent-SERVER_JOB_ID list-windows -t agent \
+  -F '#{window_index} #{window_name} -> tmux -L agent-SERVER_JOB_ID attach -t agent:#{window_index}'
+tmux -L agent-TUNNEL_JOB_ID attach -t agent:vscode
+tmux -L agent-SERVER_JOB_ID attach -t agent:backend
+```
+
+Tunnel 有 `vscode` / `admin` 窗口，后端有 `server` / `admin` / `backend` 窗口。
+后端退出会结束其 allocation；取消一个作业不等于取消另一个。
+
+### 扩展版本匹配
+
+连接器安装所支持的 `openai.chatgpt@26.930.61225`，版本不符时重新安装，
+不会任意升级后端协议。Connector VSIX 打包读取当前终端的 `code --version`，
+同步两个 manifest 的 engine 范围；最低声明为 VS Code 1.95，
+官方扩展另有最低要求（该版本为 1.96.2）。无法探测版本时打印警告。
+安装明确报 VS Code 不兼容时重打包并重试一次；其他错误直接报告。
+这不会升级 VS Code，也不保证任意未来版本或旧版本兼容。
+
+CLI 显示的已安装版本不一定等于当前窗口内存里已加载的版本。
+`Official extension version mismatch` 会报告窗口实际版本及要求版本；
+执行 **Developer: Reload Window** 后再次运行连接命令。后端无须重启。
+
 ## 终端连接与停止
 
 使用启动日志输出的 socket URL：

@@ -76,7 +76,9 @@ async function activate(context, api) {
       const launcher = C.dispatcherLauncher(chosenComponent);
       C.writeJson(C.windowPath(root), { descriptor: request.descriptor, project, component: chosenComponent });
       const official = vscode.extensions.getExtension('openai.chatgpt');
-      if (official?.packageJSON.version !== C.EXTENSION_VERSION) throw new Error('Official extension version mismatch');
+      if (official?.packageJSON.version !== C.EXTENSION_VERSION) {
+        throw new Error(`Official extension version mismatch: this window runs ${official?.packageJSON.version ?? 'no openai.chatgpt extension'}, but the backend requires ${C.EXTENSION_VERSION}. Run "Developer: Reload Window" (or reopen the tunnel) so this window loads the extension installed by the CLI, then repeat the connection command.`);
+      }
       const selection = path.join(root, 'connections', `${C.hash(hook)}.json`);
       C.writeJson(selection, { descriptor: request.descriptor, project: C.canonical(project), hostname: os.hostname() });
       const reload = configuration.get('cliExecutable') !== launcher || context.workspaceState.get('selectedDescriptor') !== request.descriptor || context.workspaceState.get('selectedProject') !== project;

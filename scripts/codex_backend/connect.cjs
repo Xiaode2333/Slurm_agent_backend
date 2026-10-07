@@ -81,6 +81,26 @@ function send(socket, value) {
     connection.on('end', () => { if (!buffer.includes('\n')) reject(new Error('Helper closed without a reply')); });
   });
 }
+function installVsix() {
+  const vsix = path.join(__dirname, 'codex-backend.vsix');
+  try {
+    const output = execFileSync('code', ['--install-extension', vsix, '--force'], {
+      encoding: 'utf8', stdio: ['inherit', 'pipe', 'pipe'], timeout: 120000,
+    });
+    process.stdout.write(output);
+    return;
+  } catch (error) {
+    const output = `${error.stdout || ''}${error.stderr || ''}`;
+    process.stderr.write(output);
+    if (!/compatible with VS Code/i.test(output)) throw error;
+    // The installed component may predate dynamic engine ranges (the
+    // component hash only changes when source changes), so repackage the
+    // vsix against the client's own version and retry once.
+    console.error('Connector package is not compatible with the local VS Code version; repackaging with a matching engine range.');
+    execFileSync(process.execPath, [path.join(__dirname, 'package-helper.cjs'), __dirname], { stdio: 'inherit', timeout: 60000 });
+    execFileSync('code', ['--install-extension', vsix, '--force'], { stdio: 'inherit', timeout: 120000 });
+  }
+}
 async function connect(project, action = 'connect') {
   project = C.canonical(project);
   const selected = C.selectBackend({ project });
@@ -113,9 +133,12 @@ async function connect(project, action = 'connect') {
   if (!helper || helper.component !== __dirname) {
     const installed = execFileSync('code', ['--list-extensions', '--show-versions'], { encoding: 'utf8', timeout: 30000 });
     const official = installed.split(/\r?\n/).find(line => line.startsWith('openai.chatgpt@'));
-    if (official && official !== `openai.chatgpt@${C.EXTENSION_VERSION}`) throw new Error(`Unsupported official extension: ${official}`);
-    if (!official) execFileSync('code', ['--install-extension', `openai.chatgpt@${C.EXTENSION_VERSION}`], { stdio: 'inherit', timeout: 120000 });
-    execFileSync('code', ['--install-extension', path.join(__dirname, 'codex-backend.vsix'), '--force'], { stdio: 'inherit', timeout: 120000 });
+    if (official && official !== `openai.chatgpt@${C.EXTENSION_VERSION}`) {
+      console.error(`Official extension ${official} does not match the supported ${C.EXTENSION_VERSION}; reinstalling.`);
+      execFileSync('code', ['--uninstall-extension', 'openai.chatgpt', '--force'], { stdio: 'inherit', timeout: 120000 });
+    }
+    execFileSync('code', ['--install-extension', `openai.chatgpt@${C.EXTENSION_VERSION}`, '--force'], { stdio: 'inherit', timeout: 120000 });
+    installVsix();
     const deadline = Date.now() + 90000;
     do {
       helper = findHelper(project, hook);
@@ -136,7 +159,7 @@ async function connect(project, action = 'connect') {
   if (result.status === 'failed') throw new Error(result.error);
   console.log(`CONNECTED project=${result.project} job=${result.jobId} node=${result.hostname} backend_pid=${result.backendPid} sessions=${result.partial ? '>=' : ''}${result.threadCount} active_on_page=${result.activeIds.length}`);
 }
-module.exports = { findHelper, send, connect };
+module.exports = { findHelper, send, connect, installVsix };
 if (require.main === module) connect(...process.argv.slice(2)).catch(error => {
   process.stderr.write(`codex-backend: ${error.message}\n`); process.exitCode = 1;
 });
