@@ -39,8 +39,6 @@ persistence, and the real tmux pane lifetime with redirected logs.
 The public repository runs these focused tests; unrelated simulation tests and
 their result artifacts are not included.
 
-## Remaining limits
-
 ## Multi-project and native harness implementation, 2026-10-06
 
 The updated Node suite passes 24 cases and the Python launcher suite passes nine.
@@ -56,10 +54,10 @@ OpenCode health/project attachment selection, Pi RPC reconnection, Claude
 stream-json process persistence and native Pi/Claude tmux exit passed. No model
 prompt or fabricated tool approval was sent.
 
-Two actual official-extension windows individually completed initialize and
-sidebar-list verification through their relay. The simultaneous final recheck
-of the first window is being repeated with explicit current-host ownership;
-it is not yet recorded as complete. The test uses synthetic projects, a private
+Two actual official-extension windows completed initialize and sidebar-list
+verification through their relay. After connecting the second project, both
+current extension hosts still verified the same backend and their own project
+directory; their application setting used the same dispatcher. The test uses synthetic projects, a private
 loopback VS Code web server and an existing pinned official extension, rather
 than a newly authenticated Tunnel. Existing live user allocations remain intact.
 

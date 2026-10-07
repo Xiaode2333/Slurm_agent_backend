@@ -43,6 +43,10 @@ p50/p95 were 0.48/2.58 ms and relay p50/p95 were 0.51/2.76 ms. The tests ran
 sequentially, so the difference is cache/noise and is not a claim that a relay
 is faster than direct access. These are transport/history-query measurements,
 not browser rendering or model-generation timings.
+In the real two-window acceptance check, connection including one reload took
+about 34 and 40 seconds. Both windows retained verified Slurm/project bindings.
+There is no compatible direct-connection UI baseline, so those times do not
+establish an end-to-end speedup and still leave browser/extension startup work.
 
 The previous live backend also timed out on direct indexed RPC calls: its
 initial direct phase failed 12/32 requests, and a later direct phase failed
