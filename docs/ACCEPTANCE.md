@@ -38,6 +38,9 @@ installation, cached and new browser authentication, failed credential
 persistence, and the real tmux pane lifetime with redirected logs.
 The public repository runs these focused tests; unrelated simulation tests and
 their result artifacts are not included.
+Tests and JavaScript/Python compilation checks run locally with
+`scripts/check_backend.sh`; the automatic GitHub Actions workflow was removed
+at the user's request.
 
 ## Multi-project and native harness implementation, 2026-10-06
 

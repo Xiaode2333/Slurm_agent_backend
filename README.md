@@ -97,6 +97,16 @@ scancel JOB_ID
 
 ## 验证与文档
 
+编译/语法检查和测试在本地运行，不使用 GitHub Actions。先在当前 Python
+环境安装 `requirements-dev.txt`，然后执行：
+
+```bash
+bash scripts/check_backend.sh
+```
+
+在 Slurm 集群上使用 CPU allocation 和站点要求的 Python 环境；检查脚本不提交作业。
+也可分步执行：
+
 ```bash
 npm ci --ignore-scripts --prefix scripts/codex_backend
 npm test --prefix scripts/codex_backend

@@ -35,7 +35,9 @@ def test_codex_connector_dependency_contract():
     assert lock["packages"]["node_modules/ws"]["version"] == "8.22.0"
     helper = json.loads((ROOT / "scripts/codex_backend/helper/package.json").read_text())
     assert helper["extensionKind"] == ["workspace"]
-    assert helper["extensionDependencies"] == ["openai.chatgpt"]
+    # The helper must publish the host decision before the official CLI starts.
+    assert "*" in helper["activationEvents"]
+    assert "openai.chatgpt" not in helper.get("extensionDependencies", [])
 
 
 def test_tunnel_starts_before_backend_installation(tmp_path):
