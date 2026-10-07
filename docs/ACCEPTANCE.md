@@ -41,6 +41,34 @@ their result artifacts are not included.
 
 ## Remaining limits
 
+## Multi-project and native harness implementation, 2026-10-06
+
+The updated Node suite passes 24 cases and the Python launcher suite passes nine.
+Coverage includes shared-project selection, independent host bindings, a chat
+view activating before its helper, indexed lists versus explicit repair,
+WAL-consistent backups/restoration, controller/observer isolation, event replay,
+UTF-8 JSONL framing and buffered attach input.
+
+A formal priority CPU task verified two project directories against one real
+Codex server, including a relayed new thread with omitted cwd. The local SQLite
+benchmark completed 32 direct and 32 relayed queries without errors. Installed
+OpenCode health/project attachment selection, Pi RPC reconnection, Claude
+stream-json process persistence and native Pi/Claude tmux exit passed. No model
+prompt or fabricated tool approval was sent.
+
+Two actual official-extension windows individually completed initialize and
+sidebar-list verification through their relay. The simultaneous final recheck
+of the first window is being repeated with explicit current-host ownership;
+it is not yet recorded as complete. The test uses synthetic projects, a private
+loopback VS Code web server and an existing pinned official extension, rather
+than a newly authenticated Tunnel. Existing live user allocations remain intact.
+
+There is no measured browser rendering or model-generation speedup claim;
+[performance evidence](performance.md) separates the loaded old backend from
+fresh synthetic state.
+
+## Remaining limits
+
 Native UI pagination beyond the original environment's small history list and
 a historical CLI-origin conversation using a project-path alias were not
 observed directly. Their protocol contracts have regression coverage.

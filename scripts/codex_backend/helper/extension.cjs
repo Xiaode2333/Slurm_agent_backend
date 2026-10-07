@@ -10,7 +10,7 @@ async function activate(context, api) {
   const vscode = api || require('vscode');
   const root = C.stateRoot();
   const projectFor = (descriptor, request) => {
-    const project = C.canonical(descriptor.project);
+    const project = C.canonical(request?.project || descriptor.project);
     const folders = vscode.workspace.workspaceFolders || [];
     const pending = context.workspaceState.get('pendingConnection');
     const restored = request && pending?.requestId === request.requestId &&
@@ -36,21 +36,21 @@ async function activate(context, api) {
   const finishConnection = async request => {
     try {
       const value = C.readJson(request.descriptor);
-      const descriptor = C.validateDescriptor(value, projectFor(value, request));
+      const descriptor = C.validateDescriptor(value, projectFor(value, request), os.hostname(), { allowShared: true });
       const official = vscode.extensions.getExtension('openai.chatgpt');
       if (official?.packageJSON.version !== C.EXTENSION_VERSION) throw new Error('Official extension version is not supported');
       await official.activate();
       await vscode.commands.executeCommand('chatgpt.openSidebar');
       const receiptFile = C.receiptPath(root, descriptor.socket, `extension-host:${process.pid}`);
       const receipt = await C.waitForFile(receiptFile, value => value.backendId === descriptor.id &&
-        value.connected && value.initialized && value.listCompleted &&
+        value.connected && value.initialized && value.listCompleted && (!value.project || value.project === C.canonical(request.project || descriptor.project)) &&
         /vs\s*code|chatgpt/i.test(value.client || '') && (() => {
           try { return value.startTicks === C.processIdentity(value.pid); } catch { return false; }
         })());
-      const snapshot = await C.inspectBackend(descriptor);
+      const snapshot = { threads: receipt.threadIds || [], activeIds: receipt.activeIds || [], partial: receipt.partial !== false };
       const result = { status: 'connected', jobId: descriptor.jobId, hostname: descriptor.hostname,
         backendId: descriptor.id, backendPid: descriptor.pid, connectionPid: receipt.pid,
-        threadCount: snapshot.threads.length, activeIds: snapshot.activeIds,
+        threadCount: snapshot.threads.length, partial: snapshot.partial, activeIds: snapshot.activeIds, project: projectFor(value, request),
         listCompleted: true, at: new Date().toISOString() };
       report(request, result);
       await context.workspaceState.update('pendingConnection', undefined);
@@ -65,20 +65,21 @@ async function activate(context, api) {
       const backendDir = path.join(root, 'backends') + path.sep;
       if (!path.resolve(request.descriptor || '').startsWith(backendDir)) throw new Error('Descriptor outside backend registry');
       const value = C.readJson(request.descriptor);
-      const project = projectFor(value);
-      const descriptor = C.validateDescriptor(value, project);
+      const project = projectFor(value, request);
+      const descriptor = C.validateDescriptor(value, project, os.hostname(), { allowShared: true });
       const chosenComponent = request.component || component;
       if (request.component) {
         const installRoot = path.join(os.homedir(), '.local/share/codex-backend') + path.sep;
         if (!path.resolve(chosenComponent).startsWith(installRoot) || !/^[a-f0-9]{64}$/.test(path.basename(chosenComponent)) ||
             !fs.existsSync(path.join(C.privateDirectory(chosenComponent), 'installed'))) throw new Error('Unmanaged connector component');
       }
-      const launcher = C.connectionLauncher(chosenComponent, request.descriptor, root);
+      const launcher = C.dispatcherLauncher(chosenComponent);
+      C.writeJson(C.windowPath(root), { descriptor: request.descriptor, project, component: chosenComponent });
       const official = vscode.extensions.getExtension('openai.chatgpt');
       if (official?.packageJSON.version !== C.EXTENSION_VERSION) throw new Error('Official extension version mismatch');
       const selection = path.join(root, 'connections', `${C.hash(hook)}.json`);
       C.writeJson(selection, { descriptor: request.descriptor, project: C.canonical(project), hostname: os.hostname() });
-      const reload = configuration.get('cliExecutable') !== launcher || context.workspaceState.get('selectedDescriptor') !== request.descriptor;
+      const reload = configuration.get('cliExecutable') !== launcher || context.workspaceState.get('selectedDescriptor') !== request.descriptor || context.workspaceState.get('selectedProject') !== project;
       if (reload) {
         if (context.globalState.get('originalCli') === undefined) {
           const original = configuration.inspect('cliExecutable')?.globalValue;
@@ -87,7 +88,8 @@ async function activate(context, api) {
         await context.workspaceState.update('pendingConnection', request);
         await context.workspaceState.update('selectedLauncher', launcher);
         await context.workspaceState.update('selectedDescriptor', request.descriptor);
-        await configuration.update('cliExecutable', launcher, vscode.ConfigurationTarget.Global);
+        await context.workspaceState.update('selectedProject', project);
+        if (configuration.get('cliExecutable') !== launcher) await configuration.update('cliExecutable', launcher, vscode.ConfigurationTarget.Global);
         report(request, { status: 'reloading', backendId: descriptor.id });
         return { status: 'reloading', afterReply: () => vscode.commands.executeCommand('workbench.action.reloadWindow') };
       }
@@ -105,6 +107,7 @@ async function activate(context, api) {
       connection.pause();
       try {
         const request = JSON.parse(buffer.split('\n')[0]);
+        if (request.action === 'status') { connection.end(JSON.stringify(connectionStatus()) + '\n'); return; }
         if (request.action !== 'connect') throw new Error('Unknown connector action');
         const { afterReply, ...reply } = await connect(request);
         connection.end(JSON.stringify(reply) + '\n', () => { if (afterReply) setImmediate(afterReply); });
@@ -122,6 +125,10 @@ async function activate(context, api) {
     const value = { hostname: os.hostname(), projects: (vscode.workspace.workspaceFolders || []).map(f => C.canonical(f.uri.fsPath)),
       hooks: [...hooks], terminals: [...terminals.values()], socket, pid: process.pid, startTicks: C.processIdentity(process.pid), sessionId, component };
     C.writeJson(registration, value);
+    const selected = context.workspaceState.get('selectedDescriptor');
+    const project = context.workspaceState.get('selectedProject');
+    if (selected && project) C.writeJson(C.windowPath(root), { descriptor: selected, project, component, sessionId });
+    else C.writeJson(C.windowPath(root), { local: true, sessionId });
     // Persistent terminals retain their hook through a window reload. The host
     // receiving the terminal from VS Code owns its claim, even while the old
     // host remains alive for the remote reconnection grace period.
@@ -157,16 +164,47 @@ async function activate(context, api) {
     fs.rmSync(privateRoot, { recursive: true, force: true });
   } });
   context.subscriptions.push(vscode.window.registerUriHandler({ handleUri() {} }));
+  function connectionStatus() {
+    const configured = configuration.get('cliExecutable');
+    let selected;
+    try { selected = C.readJson(C.windowPath(root)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (!selected || selected.local) return { mode: 'local', configuredCli: configured, verified: false };
+    try {
+      const descriptor = C.validateDescriptor(C.readJson(selected.descriptor), selected.project, os.hostname(), { allowShared: true });
+      const receipt = C.readJson(C.receiptPath(root, descriptor.socket, `extension-host:${process.pid}`));
+      const live = receipt.connected && receipt.initialized && receipt.backendId === descriptor.id &&
+        receipt.backendPid === descriptor.pid &&
+        receipt.project === selected.project && receipt.startTicks === C.processIdentity(receipt.pid);
+      const configuredForBackend = configured === context.workspaceState.get('selectedLauncher');
+      return { mode: live && configuredForBackend ? 'slurm' : 'configured-unverified', verified: Boolean(live && configuredForBackend),
+        project: selected.project, jobId: descriptor.jobId, hostname: descriptor.hostname, backendPid: descriptor.pid,
+        relayPid: receipt.pid, configuredCli: configured, initialized: receipt.initialized, listCompleted: receipt.listCompleted };
+    } catch (error) { return { mode: 'configured-unverified', verified: false, project: selected.project, error: error.message }; }
+  }
+  context.subscriptions.push(vscode.commands.registerCommand('mdlammps.codexBackend.status', async () => {
+    const status = connectionStatus();
+    vscode.window.showInformationMessage(status.verified ?
+      `Codex: Slurm job ${status.jobId} on ${status.hostname}, backend PID ${status.backendPid}, project ${status.project}` :
+      `Codex: ${status.mode}${status.error ? ': ' + status.error : ''}`);
+    return status;
+  }));
   context.subscriptions.push(vscode.commands.registerCommand('mdlammps.codexBackend.restore', async () => {
-    const original = context.globalState.get('originalCli');
-    if (!original) return;
-    if (configuration.get('cliExecutable') !== context.workspaceState.get('selectedLauncher')) throw new Error('CLI setting has changed since connection; leaving it intact');
-    await configuration.update('cliExecutable', original.hadValue ? original.value : undefined, vscode.ConfigurationTarget.Global);
-    await context.globalState.update('originalCli', undefined);
+    // Unbind only this extension host. Other windows still use the dispatcher.
+    fs.rmSync(C.windowPath(root), { force: true });
+    await context.workspaceState.update('selectedDescriptor', undefined);
+    await context.workspaceState.update('selectedProject', undefined);
+    await context.workspaceState.update('pendingConnection', undefined);
     await vscode.commands.executeCommand('workbench.action.reloadWindow');
   }));
   const pending = context.workspaceState.get('pendingConnection');
-  if (pending) finishConnection(pending);
-  return { connect };
+  if (pending) {
+    // A legacy helper can reload into this version with its old bound launcher.
+    // Migrate before the official startup event, without another reload.
+    const launcher = C.dispatcherLauncher(component);
+    await context.workspaceState.update('selectedLauncher', launcher);
+    if (configuration.get('cliExecutable') !== launcher) await configuration.update('cliExecutable', launcher, vscode.ConfigurationTarget.Global);
+    finishConnection(pending);
+  }
+  return { connect, connectionStatus };
 }
 module.exports = { activate };

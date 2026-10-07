@@ -82,15 +82,31 @@ function send(socket, value) {
   });
 }
 async function connect(project, action = 'connect') {
-  C.checkCli();
+  project = C.canonical(project);
   const selected = C.selectBackend({ project });
-  selected.descriptor.projectAliases = await C.discoverProjectAliases(selected.descriptor.socket, project);
-  C.writeJson(selected.file, selected.descriptor);
-  const snapshot = await C.inspectBackend(selected.descriptor);
-  if (action === 'status') {
-    console.log(JSON.stringify({ ...selected, snapshot }, null, 2)); return;
+  if (action === 'refresh-history') {
+    const rpc = await C.rpcClient(selected.descriptor.socket, { timeout: 120000 });
+    try { await rpc.request('thread/list', { limit: 1, cwd: project, useStateDbOnly: false }); }
+    finally { rpc.close(); }
+    const paths = await C.discoverProjectAliases(selected.descriptor.socket, project);
+    C.writeJson(path.join(C.stateRoot(), 'aliases', `${C.hash(project)}.json`), { paths });
+    console.log(`HISTORY_REFRESHED project=${project} aliases=${paths.length}`); return;
   }
-  if (action !== 'connect') throw new Error('Usage: connect_codex_backend.sh [connect|status|check]');
+  if (action === 'status' || action === 'doctor') {
+    const hook = process.env.VSCODE_IPC_HOOK_CLI;
+    const helper = hook && findHelper(project, hook);
+    const window = helper?.component === __dirname ? await send(helper.socket, { action: 'status' }) :
+      { mode: helper ? 'legacy-connector-unverified' : 'window-unverified', verified: false };
+    let health;
+    if (action === 'doctor') {
+      const started = performance.now();
+      try { const client = await C.rpcClient(selected.descriptor.socket, { timeout: 5000 }); client.close(); health = { initializeMs: performance.now() - started }; }
+      catch (error) { health = { error: error.message }; }
+    }
+    console.log(JSON.stringify({ project, backendAvailable: true, backend: { jobId: selected.descriptor.jobId,
+      hostname: selected.descriptor.hostname, pid: selected.descriptor.pid, startupProject: selected.descriptor.project }, window, health }, null, 2)); return;
+  }
+  if (action !== 'connect') throw new Error('Usage: connect_codex_backend.sh [--project DIR] [connect|status|doctor|refresh-history|check]');
   const hook = process.env.VSCODE_IPC_HOOK_CLI;
   if (!hook) throw new Error('Run in a VS Code Tunnel integrated terminal');
   let helper = findHelper(project, hook);
@@ -107,15 +123,18 @@ async function connect(project, action = 'connect') {
       await delay(250);
     } while (Date.now() < deadline);
     if (!helper) throw new Error(`No connector registration matched this terminal on ${os.hostname()} in ${C.canonical(project)} (hook ${hook}). The extension may be disabled, the workspace untrusted, or terminal ownership unavailable`);
+    if (helper.component !== __dirname && C.canonical(selected.descriptor.project) !== project) {
+      throw new Error('Connector updated, but this window still runs the old single-project helper. Run Developer: Reload Window once, then repeat the connection command. The backend keeps running.');
+    }
   }
   const requestId = crypto.randomUUID();
-  const reply = await send(helper.socket, { action: 'connect', requestId, descriptor: selected.file, component: __dirname });
+  const reply = await send(helper.socket, { action: 'connect', requestId, descriptor: selected.file, project, component: __dirname });
   if (reply.status === 'failed') throw new Error(reply.error);
   if (reply.status === 'reloading') console.log('Applying backend connection; VS Code will reload once. The backend keeps running.');
   const result = await C.waitForFile(path.join(C.stateRoot(), 'results', `${requestId}.json`),
     value => value.status === 'connected' || value.status === 'failed');
   if (result.status === 'failed') throw new Error(result.error);
-  console.log(`CONNECTED job=${result.jobId} node=${result.hostname} backend_pid=${result.backendPid} sessions=${result.threadCount} active=${result.activeIds.length}`);
+  console.log(`CONNECTED project=${result.project} job=${result.jobId} node=${result.hostname} backend_pid=${result.backendPid} sessions=${result.partial ? '>=' : ''}${result.threadCount} active_on_page=${result.activeIds.length}`);
 }
 module.exports = { findHelper, send, connect };
 if (require.main === module) connect(...process.argv.slice(2)).catch(error => {

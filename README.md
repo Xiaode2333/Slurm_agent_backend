@@ -63,10 +63,21 @@ bash ./scripts/connect_codex_backend.sh
 
 首次连接可能自动 reload 一次；重复连接同一个后端不会再次 reload。
 成功时显示 `CONNECTED`、allocation、后端 PID 和会话计数，随后使用官方 Codex 侧边栏查看和恢复会话。
-命令面板中的 **Codex Backend: Restore Previous CLI Setting** 可恢复原 CLI 配置。
+命令面板中的 **Codex Backend: Show Connection Status** 可核验当前窗口的 allocation、后端 PID 和活跃 relay。
+**Codex Backend: Use Local Codex in This Window** 会解除当前窗口绑定；共享入口继续服务其他窗口。
 
-后端按工作目录隔离和发现。若要在自己的项目中使用，将本仓库的 `scripts/` 安装到该项目，
-从该项目根目录提交作业并执行连接命令。已有 Tunnel 只有在同一节点、同一项目且后端唯一时才能连接。
+后端按工作目录隔离和发现。可在自己的项目目录中直接调用本仓库的绝对路径连接脚本，不必复制脚本：
+
+```bash
+cd /absolute/your-project
+bash /absolute/Slurm_agent_backend/scripts/connect_codex_backend.sh
+bash /absolute/Slurm_agent_backend/scripts/connect_codex_backend.sh status
+```
+
+同一节点上的多个项目窗口可以共享一个后端。官方 CLI override 是应用级设置，
+共享 dispatcher 会按实际扩展宿主分别绑定窗口；未绑定的窗口使用正常 CLI。
+后端不明确时，使用 `CODEX_BACKEND_JOB=JOB_ID` 指定。`status` 的 `window.verified=true`
+表示当前窗口有活跃 relay 证据，`backendAvailable=true` 单独不能证明侧边栏已经连接。
 
 ## 终端连接与停止
 
@@ -99,6 +110,8 @@ Python 测试依赖 `tmux`；安装 npm 依赖后才能执行完整 Node 回归�
 
 - [后端、连接器、存储与生命周期](docs/backend.md)
 - [原环境验收与覆盖边界](docs/ACCEPTANCE.md)
+- [OpenCode、Pi 和 Claude Code](docs/harnesses.md)
+- [性能变化、测量与生效边界](docs/performance.md)
 
 认证、会话、SQLite、socket、扩展安装包及运行日志都保存在用户私有目录或忽略路径中。
 Tunnel 凭据以不绑定 hostname 的文件方式保存，目录权限 700、凭据权限 600，以便在不同节点复用。

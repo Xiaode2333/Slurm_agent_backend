@@ -76,20 +76,32 @@ bash ./scripts/connect_codex_backend.sh
 The command discovers the backend for the current allocation and canonical
 project path, validates its process identity and socket, installs private
 connection components and a small workspace helper extension, and applies the
-official `chatgpt.cliExecutable` setting. The helper uses VS Code's configuration
-and command APIs; it supplies no separate chat interface. First connection may
+official `chatgpt.cliExecutable` setting. The helper uses VS Code's configuration and command APIs. Because the official override is application-scoped, one dispatcher resolves private bindings by hostname and extension-host process identity; each project/window retains its own backend. First connection may
 reload the window once. Repeated connections to the same backend do not reload.
-The previous CLI setting is retained; the command **Codex Backend: Restore
-Previous CLI Setting** restores it without changing unrelated settings.
+The command **Codex Backend: Show Connection Status** reports live relay evidence.
+The helper restores its per-host binding during eager activation before the
+official extension's startup event; otherwise the shared dispatcher would start
+an unbound local CLI during reload.
+Restored chat views can activate even earlier; the dispatcher allows a bounded
+five-second wait for the helper's explicit per-host decision. A registered
+unbound window chooses the normal CLI immediately.
+**Codex Backend: Use Local Codex in This Window** unbinds only the current window;
+the shared dispatcher stays configured for other windows. Unbound windows use the normal CLI.
+When upgrading an already active single-project helper in another project,
+run **Developer: Reload Window** once after installation and repeat the
+connection command. The old helper cannot apply a shared-project binding;
+the connector identifies this migration case explicitly.
 
-An already running Tunnel in another allocation can connect when it is on the
-backend's node and this project has exactly one valid backend there. A registered
+An already running Tunnel in another allocation can connect when it is on the backend's node and there is a unique valid backend there.
+One backend may serve several projects. Run the connector from the intended
+project directory, or pass `--project DIR`. A registered
 backend in the terminal's own allocation takes precedence. Multiple node/project
 candidates produce an error. A Tunnel on another node cannot reach the Unix socket.
 
 Success requires a real official-extension initialize response and a successful
 sidebar thread-list request through the relay. The command then prints the
-allocation, backend PID and authoritative total/active session counts. A direct
+allocation, backend PID and bounded history-page counts from the real sidebar receipt. `sessions=>=N`
+indicates pagination, and `active_on_page` is not a total active-session count. A direct
 socket probe alone does not qualify. A missing backend, stale descriptor,
 incompatible version or ambiguous match produces an error and starts no backend.
 
@@ -99,6 +111,8 @@ and receive subsequent notifications; history search/pagination remain native.
 Default source filters are expanded to include app-server threads, while explicit
 filters are preserved. Equivalent project symlink paths are normalized. The relay
 does not create a turn when listing or resuming a thread.
+New threads and one-shot commands that omit a working directory use the
+connecting window's project; a resumed thread retains its own directory.
 
 For terminal access, use the socket URL printed in the startup output:
 
@@ -111,7 +125,7 @@ $HOME/.npm-global/bin/codex resume <thread-id> --remote unix://<socket-path>
 
 Unix sockets are node-local and user-private. Backend descriptors, helper
 registrations and connection receipts live in the private user directory
-`$HOME/.local/state/codex-backend`. Immutable installed component copies live
+`$HOME/.local/state/codex-backend`. Immutable component copies share an integrity-checked dependency cache and live
 under `$HOME/.local/share/codex-backend`; npm uses the committed lock file and
 does not run dependency scripts. Runtime state, packaged extensions and
 dependencies are excluded from Git.
@@ -122,11 +136,14 @@ by shell integration. Other windows retain their own registrations.
 Installation selects Node 22 from the terminal PATH or the existing managed
 user installation, so a different terminal Node version needs no path override.
 
-SQLite indexes, goals and paginated history use a durable project-specific
-namespace under `~/.local/state/codex-backend/sqlite/`. An exclusive service lock
-prevents two allocations from opening that namespace on different nodes. The
-default `~/.codex` SQLite files are left alone; startup indexes existing shared
-rollouts. This avoids cross-node WAL failures without discarding shared history.
+SQLite indexes and goals work in the allocation's private node-local directory.
+An exclusive lock owns the durable namespace under
+`~/.local/state/codex-backend/sqlite/`. Consistent SQLite backup snapshots are saved
+every 60 seconds and again at graceful exit, then restored at next startup.
+Original durable databases are preserved separately from the snapshots. Shared
+rollouts remain persistent. Abrupt node loss/SIGKILL can lose up to one backup
+interval of SQLite-only state; this is not a promise of lossless process migration.
+Existing allocations keep their current storage until a new allocation is started.
 
 Closing a client disconnects only that client. Explicit stop requests are
 forwarded normally. Approval/input requests retain the backend's policy; the
@@ -140,6 +157,21 @@ an interrupted process is not promised to resume continuously. Do not update
 the CLI during an allocation. An extension or CLI upgrade requires compatibility
 verification before connection; the development-only CLI override is not an
 official external-endpoint setting.
+
+## Fast history and diagnosis
+
+Default relay history requests use the state index and do not scan/repair rollout
+files on each page. Explicit `useStateDbOnly:false` is preserved. To import
+new history produced by a separate local CLI or refresh historical path aliases:
+
+```bash
+bash scripts/connect_codex_backend.sh refresh-history
+bash scripts/connect_codex_backend.sh status
+bash scripts/connect_codex_backend.sh doctor
+```
+
+Status separates backend availability from proof of this window's actual relay.
+Doctor adds a bounded initialize probe without scanning thread history.
 
 ## Verification
 

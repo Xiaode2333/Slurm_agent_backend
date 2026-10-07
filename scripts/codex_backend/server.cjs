@@ -25,6 +25,7 @@ async function run(project, socket, descriptorFile, sqliteHome) {
   C.checkCli();
   project = C.canonical(project);
   C.privateDirectory(path.dirname(socket));
+  C.privateDirectory(path.dirname(descriptorFile));
   C.privateDirectory(sqliteHome);
   recoverBackfill(sqliteHome);
   console.log('BACKEND_STARTUP starting app-server');
@@ -52,10 +53,10 @@ async function run(project, socket, descriptorFile, sqliteHome) {
     }
     // Import shared rollout history into this project's private, durable index.
     // Never share SQLite WAL files with another node's default Codex process.
-    const index = await C.rpcClient(socket);
+    const index = await C.rpcClient(socket, { timeout: 120000 });
     try { await index.request('thread/list', { limit: 1, sourceKinds: ['cli', 'vscode', 'appServer'], useStateDbOnly: false }); }
     finally { index.close(); }
-    descriptor.projectAliases = await C.discoverProjectAliases(socket, project);
+    descriptor.projectAliases = [project];
     descriptor.status = 'ready'; C.writeJson(descriptorFile, descriptor);
     console.log(`BACKEND_READY job=${descriptor.jobId} node=${descriptor.hostname} pid=${descriptor.pid} socket=${socket}`);
     console.log(`TUI: ${C.CLI} --remote unix://${socket}`);

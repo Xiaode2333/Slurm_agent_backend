@@ -127,7 +127,7 @@ test('default source filters include appServer; explicit filters and unrelated p
   const implicit = normalizeRequest({ method: 'thread/list', id: 1, params: { cwd: path.join(root, 'alias'), sourceKinds: [] } }, root);
   assert.deepEqual(implicit.params.sourceKinds, ['cli', 'vscode', 'appServer']); assert.equal(implicit.params.cwd, root);
   const explicit = { method: 'thread/list', id: 2, params: { cwd: '/unrelated', sourceKinds: ['exec'], cursor: 'next' } };
-  assert.deepEqual(normalizeRequest(explicit, root), explicit);
+  assert.deepEqual(normalizeRequest(explicit, root), { ...explicit, params: { ...explicit.params, useStateDbOnly: true } });
   assert.deepEqual(normalizeRequest({ id: 9, result: { answers: {} } }, root), { id: 9, result: { answers: {} } });
   const expanded = normalizeRequest({ method: 'thread/list', params: { cwd: root } }, root, [root, path.join(root, 'alias')]);
   assert.deepEqual(expanded.params.cwd, [root, path.join(root, 'alias')]);

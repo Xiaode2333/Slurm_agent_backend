@@ -4,6 +4,7 @@ dist/
 __pycache__/
 .pytest_cache/
 .venv/
+tmp/
 .codex/
 .vscode/
 *.out

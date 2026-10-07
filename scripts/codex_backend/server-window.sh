@@ -10,5 +10,5 @@ finish() {
 trap finish EXIT
 node_bin="$(cat "$component_dir/node-path")"
 # One allocation owns a project's persistent SQLite namespace at a time.
-flock -n "$sqlite_home/service.lock" "$node_bin" "$component_dir/server.cjs" "$project" "$socket" "$descriptor" "$sqlite_home" > >(tee -a "$log_file") 2>&1
+flock -n "$sqlite_home/service.lock" "$node_bin" "$component_dir/sqlite-store.cjs" "$project" "$socket" "$descriptor" "$sqlite_home" > >(tee -a "$log_file") 2>&1
 exit $?

@@ -4,7 +4,6 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
-const WebSocket = require('ws');
 
 const CLI_VERSION = '0.160.1';
 const EXTENSION_VERSION = '26.930.61225';
@@ -47,10 +46,10 @@ function checkCli() {
   }
   return CLI_VERSION;
 }
-function validateDescriptor(descriptor, project, host = os.hostname()) {
+function validateDescriptor(descriptor, project, host = os.hostname(), { allowShared = false } = {}) {
   if (descriptor.schema !== 'codex_backend_v1' || descriptor.status !== 'ready' ||
       descriptor.hostname !== host || descriptor.cli !== CLI || descriptor.version !== CLI_VERSION ||
-      canonical(descriptor.project) !== canonical(project) ||
+      (!allowShared && canonical(descriptor.project) !== canonical(project)) ||
       descriptor.startTicks !== processIdentity(descriptor.pid)) {
     throw new Error('Backend descriptor is stale, incompatible, or belongs to another node/project');
   }
@@ -62,7 +61,8 @@ function validateDescriptor(descriptor, project, host = os.hostname()) {
 }
 function selectBackend({ root = stateRoot(), project, env = process.env, host = os.hostname() }) {
   const dir = path.join(root, 'backends');
-  const job = env.SLURM_JOB_ID;
+  project = canonical(project);
+  const job = env.CODEX_BACKEND_JOB || env.SLURM_JOB_ID;
   const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter(x => x.endsWith('.json')) : [];
   const candidates = [];
   const errors = [];
@@ -72,28 +72,31 @@ function selectBackend({ root = stateRoot(), project, env = process.env, host = 
     try {
       const value = readJson(file);
       if (value.hostname !== host ||
-          canonical(value.project) !== canonical(project)) continue;
+          !value.project) continue;
       if (job && value.jobId === job) knownAllocation = true;
-      validateDescriptor(value, project, host);
+      validateDescriptor(value, project, host, { allowShared: true });
       candidates.push({ file, descriptor: value });
     } catch (error) { errors.push(`${name}: ${error.message}`); }
   }
   // A Tunnel can run in a separate allocation on this same node. Prefer its
   // allocation when registered; otherwise require a unique node/project match.
-  const matches = job && knownAllocation ? candidates.filter(x => x.descriptor.jobId === job) : candidates;
+  const projectCandidates = candidates.filter(x => canonical(x.descriptor.project) === project);
+  const matches = job && (knownAllocation || env.CODEX_BACKEND_JOB) ? candidates.filter(x => x.descriptor.jobId === job) :
+    projectCandidates.length ? projectCandidates : candidates;
   if (matches.length !== 1) {
     throw new Error(`Expected one backend on ${host}${job && knownAllocation ? ` in allocation ${job}` : ''}; found ${matches.length}. ${errors.join('; ')}`);
   }
   return matches[0];
 }
 function connectSocket(socket) {
+  const WebSocket = require('ws');
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws+unix://${socket}:/`, { handshakeTimeout: 10000, maxPayload: 64 * 1024 * 1024 });
     ws.once('open', () => resolve(ws));
     ws.once('error', reject);
   });
 }
-async function rpcClient(socket) {
+async function rpcClient(socket, { timeout = 20000 } = {}) {
   const ws = await connectSocket(socket);
   const pending = new Map();
   let nextId = 1;
@@ -112,7 +115,7 @@ async function rpcClient(socket) {
   });
   const request = (method, params) => new Promise((resolve, reject) => {
     const id = nextId++;
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`RPC timeout: ${method}`)); }, 20000);
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`RPC timeout: ${method}`)); }, timeout);
     pending.set(id, { resolve, reject, timer });
     ws.send(JSON.stringify({ id, method, params }));
   });
@@ -126,27 +129,27 @@ async function rpcClient(socket) {
     return { request, close: () => ws.close(), initialized };
   } catch (error) { ws.terminate(); throw error; }
 }
-async function inspectBackend(descriptor) {
+async function inspectBackend(descriptor, { project = descriptor.project, exhaustive = true } = {}) {
   const client = await rpcClient(descriptor.socket);
   try {
     const threads = [];
     let cursor = null;
     do {
       const page = await client.request('thread/list', {
-        limit: 100, cursor, cwd: descriptor.projectAliases || descriptor.project, archived: false,
+        limit: exhaustive ? 100 : 20, cursor, cwd: canonical(project) === canonical(descriptor.project) ? descriptor.projectAliases || project : project, archived: false,
         sourceKinds: ['cli', 'vscode', 'appServer'], useStateDbOnly: true,
       });
       threads.push(...page.data); cursor = page.nextCursor;
-    } while (cursor);
+    } while (cursor && exhaustive);
     const { data: loaded } = await client.request('thread/loaded/list', {});
     const loadedSet = new Set(loaded);
-    for (const thread of threads) {
+    await Promise.all(threads.map(async thread => {
       if (loadedSet.has(thread.id)) {
         const result = await client.request('thread/read', { threadId: thread.id, includeTurns: false });
         thread.status = result.thread.status;
       }
-    }
-    return { threads, activeIds: threads.filter(t => t.status?.type === 'active').map(t => t.id) };
+    }));
+    return { threads, partial: Boolean(cursor), activeIds: threads.filter(t => t.status?.type === 'active').map(t => t.id) };
   } finally { client.close(); }
 }
 async function discoverProjectAliases(socket, project) {
@@ -194,13 +197,27 @@ function waitForFile(file, predicate, timeout = 90000) {
   });
 }
 const receiptPath = (root, socket, hook) => path.join(root, 'receipts', `${hash(socket + '\0' + (hook || ''))}.json`);
-function connectionLauncher(component, descriptorFile, root = stateRoot()) {
-  const dir = privateDirectory(path.join(root, 'launchers', hash(component + '\0' + descriptorFile)));
+const windowPath = (root, pid = process.pid) => path.join(root, 'windows', `${hash(os.hostname())}-${pid}-${processIdentity(pid)}.json`);
+function dispatcherLauncher(component) {
+  const dir = privateDirectory(path.join(os.homedir(), '.local/share/codex-backend'));
+  const file = path.join(dir, 'dispatcher.sh');
+  const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
+  const node = fs.readFileSync(path.join(component, 'node-path'), 'utf8').trim();
+  const text = `#!/usr/bin/env bash\nexec ${quote(node)} ${quote(path.join(component, 'dispatcher.cjs'))} "$@"\n`;
+  if (!fs.existsSync(file) || fs.readFileSync(file, 'utf8') !== text) {
+    const temp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(temp, text, { mode: 0o700 }); fs.renameSync(temp, file);
+  }
+  return file;
+}
+function connectionLauncher(component, descriptorFile, root = stateRoot(), project = '') {
+  const dir = privateDirectory(path.join(root, 'launchers', hash(component + '\0' + descriptorFile + '\0' + project)));
   const file = path.join(dir, 'launcher.sh');
   const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
-  fs.writeFileSync(file, `#!/usr/bin/env bash\nexport CODEX_BACKEND_DESCRIPTOR_FILE=${quote(descriptorFile)}\nexec ${quote(path.join(component, 'launcher.sh'))} "$@"\n`, { mode: 0o700 });
+  fs.writeFileSync(file, `#!/usr/bin/env bash\nexport CODEX_BACKEND_DESCRIPTOR_FILE=${quote(descriptorFile)}\nexport CODEX_BACKEND_PROJECT=${quote(project)}\nexec ${quote(path.join(component, 'launcher.sh'))} "$@"\n`, { mode: 0o700 });
   return file;
 }
 module.exports = { CLI, CLI_VERSION, EXTENSION_VERSION, stateRoot, hash, canonical, privateDirectory,
   writeJson, readJson, processIdentity, checkCli, validateDescriptor, selectBackend,
-  connectSocket, rpcClient, inspectBackend, discoverProjectAliases, waitForFile, receiptPath, connectionLauncher };
+  connectSocket, rpcClient, inspectBackend, discoverProjectAliases, waitForFile, receiptPath, windowPath,
+  dispatcherLauncher, connectionLauncher };

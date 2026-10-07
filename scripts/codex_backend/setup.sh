@@ -16,7 +16,19 @@ if [[ ! -f "$component_dir/installed" ]]; then
     cp "$source_dir/"*.cjs "$source_dir/"*.sh "$source_dir/"package*.json "$component_dir/"
     cp "$source_dir/helper/"* "$component_dir/helper/"
     printf '%s\n' "$node_bin" > "$component_dir/node-path"
-    npm ci --ignore-scripts --no-audit --no-fund --prefix "$component_dir" >&2
+    dependency_hash="$(sha256sum "$source_dir/package-lock.json" | cut -d ' ' -f 1)"
+    dependency_dir="$install_root/dependencies/$dependency_hash"
+    if [[ ! -f "$dependency_dir/installed" ]]; then
+        mkdir -p "$dependency_dir"
+        chmod 700 "$dependency_dir"
+        cp "$source_dir/"package*.json "$dependency_dir/"
+        npm ci --ignore-scripts --prefer-offline --no-audit --no-fund --prefix "$dependency_dir" >&2
+        touch "$dependency_dir/installed"
+    fi
+    if [[ ! -e "$component_dir/node_modules" && ! -L "$component_dir/node_modules" ]]; then
+        ln -s "$dependency_dir/node_modules" "$component_dir/node_modules"
+    fi
+    [[ "$(readlink -f "$component_dir/node_modules")" == "$dependency_dir/node_modules" ]] || { echo 'Unexpected component dependency path' >&2; exit 2; }
     "$node_bin" "$component_dir/package-helper.cjs" "$component_dir" >&2
     chmod +x "$component_dir/launcher.sh"
     touch "$component_dir/installed"

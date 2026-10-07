@@ -4,12 +4,27 @@
   "description": "Connect the official Codex sidebar to a persistent Slurm backend.",
   "publisher": "mdlammps",
   "version": "0.1.0",
-  "engines": { "vscode": "^1.104.0" },
+  "engines": {
+    "vscode": "^1.104.0"
+  },
   "main": "./extension.cjs",
-  "extensionKind": ["workspace"],
-  "activationEvents": ["onStartupFinished", "onUri"],
-  "extensionDependencies": ["openai.chatgpt"],
-  "contributes": { "commands": [
-    { "command": "mdlammps.codexBackend.restore", "title": "Codex Backend: Restore Previous CLI Setting" }
-  ] }
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "*",
+    "onUri"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "mdlammps.codexBackend.restore",
+        "title": "Codex Backend: Use Local Codex in This Window"
+      },
+      {
+        "command": "mdlammps.codexBackend.status",
+        "title": "Codex Backend: Show Connection Status"
+      }
+    ]
+  }
 }

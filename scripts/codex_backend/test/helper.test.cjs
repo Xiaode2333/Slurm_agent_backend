@@ -8,7 +8,13 @@ const vm = require('node:vm');
 const crypto = require('node:crypto');
 const C = require('../common.cjs');
 
-for (const openedProject of [true, false]) test(`helper connects ${openedProject ? 'project' : 'Welcome terminal'} window, reloads once and restores settings`, async t => {
+test('connector restores bindings before the official extension starts its CLI', () => {
+  const manifest = require('../helper/package.json');
+  assert.ok(manifest.activationEvents.includes('*'));
+  assert.equal(manifest.extensionDependencies, undefined);
+});
+
+for (const openedProject of [true, false]) test(`helper connects ${openedProject ? 'project' : 'Welcome terminal'} window, reloads once and unbinds only this window`, async t => {
   const originalHook = process.env.VSCODE_IPC_HOOK_CLI;
   t.after(() => { if (originalHook === undefined) delete process.env.VSCODE_IPC_HOOK_CLI; else process.env.VSCODE_IPC_HOOK_CLI = originalHook; });
   process.env.VSCODE_IPC_HOOK_CLI = 'host-hook-before-reload';
@@ -17,11 +23,12 @@ for (const openedProject of [true, false]) test(`helper connects ${openedProject
   const net = require('node:net'); const socket = path.join(root, 'backend.sock');
   const server = net.createServer(); await new Promise(resolve => server.listen(socket, resolve)); fs.chmodSync(socket, 0o600);
   t.after(() => server.close());
-  const descriptor = { schema: 'codex_backend_v1', status: 'ready', id: 'existing', project: root, socket,
+  const serverProject = path.join(root, 'server-project'); fs.mkdirSync(serverProject);
+  const descriptor = { schema: 'codex_backend_v1', status: 'ready', id: 'existing', project: serverProject, socket,
     cli: C.CLI, version: C.CLI_VERSION, hostname: os.hostname(), jobId: '42', pid: process.pid, startTicks: C.processIdentity(process.pid) };
   const descriptorFile = path.join(root, 'backends', 'backend.json'); C.writeJson(descriptorFile, descriptor);
   const component = path.resolve(__dirname, '..');
-  const localC = { ...C, stateRoot: () => root, inspectBackend: async () => ({ threads: [{ id: 'running' }, { id: 'done' }], activeIds: ['running'] }) };
+  const localC = { ...C, stateRoot: () => root, dispatcherLauncher: () => path.join(root, 'dispatcher.sh') };
   const moduleObject = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(component, 'helper/extension.cjs'), 'utf8'), {
     require(name) {
@@ -53,19 +60,22 @@ for (const openedProject of [true, false]) test(`helper connects ${openedProject
   const first = context(); const connector = await moduleObject.exports.activate(first, api);
   assert.deepEqual(C.readJson(path.join(root, 'helpers', C.hash('test-window') + '.json')).hooks, ['distinct-terminal-hook']);
   t.after(() => first.subscriptions.forEach(item => item.dispose()));
-  const request = { requestId: crypto.randomUUID(), descriptor: descriptorFile };
+  const request = { requestId: crypto.randomUUID(), descriptor: descriptorFile, project: root };
   const response = await connector.connect(request); assert.equal(response.status, 'reloading'); await response.afterReply();
   assert.equal(settings.get('unrelated'), 'keep'); assert.equal(updates.length, 1);
   assert.deepEqual({ ...global.get('originalCli') }, { hadValue: true, value: '/original/codex' });
   assert.equal(commands.filter(c => c === 'workbench.action.reloadWindow').length, 1);
   C.writeJson(C.receiptPath(root, socket, `extension-host:${process.pid}`), {
-    backendId: 'existing', connected: true, initialized: true, listCompleted: true, client: 'VS Code', pid: process.pid, startTicks: C.processIdentity(process.pid),
+    backendId: 'existing', backendPid: process.pid, connected: true, initialized: true, listCompleted: true, client: 'VS Code', pid: process.pid, startTicks: C.processIdentity(process.pid), project: root, threadIds: ['running', 'done'], activeIds: ['running'],
   });
   process.env.VSCODE_IPC_HOOK_CLI = 'host-hook-after-reload';
+  settings.set('cliExecutable', '/legacy/bound-launcher'); // Old helper's pending reload.
   api.env.sessionId = 'test-window-after-reload';
   const terminal = api.window.terminals[0];
   if (!openedProject) api.window.terminals = []; // Restoration can lag extension activation.
   const second = context(); const restoredConnector = await moduleObject.exports.activate(second, api);
+  assert.equal(settings.get('cliExecutable'), path.join(root, 'dispatcher.sh'));
+  assert.equal(updates.length, 2);
   const claim = path.join(root, 'helpers', C.hash('terminal:distinct-terminal-hook') + '.json');
   const processClaim = path.join(root, 'helpers', C.hash(`terminal-process:${terminalProcess.pid}:${C.processIdentity(terminalProcess.pid)}`) + '.json');
   if (openedProject) {
@@ -84,10 +94,14 @@ for (const openedProject of [true, false]) test(`helper connects ${openedProject
     api.window.terminals = [terminal];
     await Promise.all([...terminalListeners].map(callback => callback(terminal)));
   }
-  const repeat = { requestId: crypto.randomUUID(), descriptor: descriptorFile };
+  const repeat = { requestId: crypto.randomUUID(), descriptor: descriptorFile, project: root };
   assert.equal((await restoredConnector.connect(repeat)).status, 'verifying');
   await C.waitForFile(path.join(root, 'results', repeat.requestId + '.json'), value => value.status === 'connected', 3000);
   assert.equal(commands.filter(c => c === 'workbench.action.reloadWindow').length, 1);
+  assert.equal(restoredConnector.connectionStatus().mode, 'slurm');
+  assert.equal(restoredConnector.connectionStatus().project, root);
   await registered.get('mdlammps.codexBackend.restore')();
-  assert.equal(settings.get('cliExecutable'), '/original/codex'); assert.equal(settings.get('unrelated'), 'keep');
+  assert.equal(settings.get('cliExecutable'), path.join(root, 'dispatcher.sh'));
+  assert.equal(C.readJson(path.join(root, 'results', repeat.requestId + '.json')).status, 'connected');
+  assert.equal(restoredConnector.connectionStatus().mode, 'local'); assert.equal(settings.get('unrelated'), 'keep');
 });
