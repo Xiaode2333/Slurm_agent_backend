@@ -33,11 +33,11 @@ test('cold CLI version startup does not abort a healthy backend', t => {
   assert.throws(() => cold.checkCli(), /Unsupported CLI/);
 });
 
-test('runtime selects managed Node 22 when the terminal PATH contains another version', t => {
+for (const installation of ['prime-agent-node', 'pi-node']) test(`runtime selects ${installation} Node 22 when PATH contains another version`, t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runtime-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const outdated = path.join(root, 'old'); fs.mkdirSync(outdated);
-  const managed = path.join(root, '.local/share/prime-agent-node/current/bin'); fs.mkdirSync(managed, { recursive: true });
+  const managed = path.join(root, `.local/share/${installation}/current/bin`); fs.mkdirSync(managed, { recursive: true });
   fs.writeFileSync(path.join(outdated, 'node'), '#!/bin/bash\necho v24.0.0\n', { mode: 0o700 });
   fs.writeFileSync(path.join(managed, 'node'), '#!/bin/bash\necho v22.23.2\n', { mode: 0o700 });
   const runtime = path.resolve(__dirname, '../runtime.sh');

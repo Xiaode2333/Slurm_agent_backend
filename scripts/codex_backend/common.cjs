@@ -5,9 +5,8 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 
-const CLI_VERSION = '0.160.1';
+const { cli: CLI, version: CLI_VERSION } = require('./cli-config.cjs').cliConfig();
 const EXTENSION_VERSION = '26.930.61225';
-const CLI = path.join(os.homedir(), '.npm-global/bin/codex');
 const stateRoot = () => path.join(os.homedir(), '.local/state/codex-backend');
 const hash = value => crypto.createHash('sha256').update(value).digest('hex').slice(0, 24);
 const canonical = value => fs.realpathSync(value);

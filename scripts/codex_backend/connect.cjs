@@ -8,6 +8,10 @@ const { execFileSync } = require('node:child_process');
 const { setTimeout: delay } = require('node:timers/promises');
 const C = require('./common.cjs');
 
+function matchesComponent(helper, component = __dirname) {
+  try { return !!helper?.component && C.canonical(helper.component) === C.canonical(component); }
+  catch { return false; }
+}
 function findHelper(project, hook, root = C.stateRoot()) {
   const dir = path.join(root, 'helpers');
   const valid = item => item.hostname === os.hostname() &&
@@ -133,7 +137,7 @@ async function connect(project, action = 'connect') {
   if (action === 'status' || action === 'doctor') {
     const hook = process.env.VSCODE_IPC_HOOK_CLI;
     const helper = hook && findHelper(project, hook);
-    const window = helper?.component === __dirname ? await send(helper.socket, { action: 'status' }) :
+    const window = matchesComponent(helper) ? await send(helper.socket, { action: 'status' }) :
       { mode: helper ? 'legacy-connector-unverified' : 'window-unverified', verified: false };
     let health;
     if (action === 'doctor') {
@@ -153,7 +157,7 @@ async function connect(project, action = 'connect') {
     await refreshHelpers(project);
     helper = findHelper(project, hook);
   }
-  if (!helper || helper.component !== __dirname) {
+  if (!matchesComponent(helper)) {
     const installed = execFileSync('code', ['--list-extensions', '--show-versions'], { encoding: 'utf8', timeout: 30000 });
     const official = installed.split(/\r?\n/).find(line => line.startsWith('openai.chatgpt@'));
     if (official && official !== `openai.chatgpt@${C.EXTENSION_VERSION}`) {
@@ -173,12 +177,14 @@ async function connect(project, action = 'connect') {
       await delay(250);
     } while (Date.now() < deadline);
     if (!helper) throw new Error(`No connector registration matched this terminal on ${os.hostname()} in ${C.canonical(project)} (hook ${hook}). The extension may be disabled, the workspace untrusted, or terminal ownership unavailable`);
-    if (helper.component !== __dirname && (selected.descriptor.transport || C.canonical(selected.descriptor.project) !== project)) {
+    if (!matchesComponent(helper) && (selected.descriptor.transport || C.canonical(selected.descriptor.project) !== project)) {
       throw new Error('Connector updated, but this window still runs the old helper, which cannot validate this remote/project binding. Run Developer: Reload Window once, then repeat the connection command. The backend keeps running.');
     }
   }
   const requestId = crypto.randomUUID();
-  const reply = await send(helper.socket, { action: 'connect', requestId, descriptor: selected.file, project, component: __dirname });
+  // Preserve the managed path spelling for helpers predating canonical validation.
+  const requestedComponent = matchesComponent(helper) ? helper.component : __dirname;
+  const reply = await send(helper.socket, { action: 'connect', requestId, descriptor: selected.file, project, component: requestedComponent });
   if (reply.status === 'failed') throw new Error(reply.error);
   if (reply.status === 'reloading') console.log('Applying backend connection; VS Code will reload once. The backend keeps running.');
   const result = await C.waitForFile(path.join(C.stateRoot(), 'results', `${requestId}.json`),
@@ -186,7 +192,7 @@ async function connect(project, action = 'connect') {
   if (result.status === 'failed') throw new Error(result.error);
   console.log(`CONNECTED project=${result.project} job=${result.jobId} node=${result.hostname} backend_pid=${result.backendPid} sessions=${result.partial ? '>=' : ''}${result.threadCount} active_on_page=${result.activeIds.length}`);
 }
-module.exports = { findHelper, refreshHelpers, send, connect, installVsix };
+module.exports = { matchesComponent, findHelper, refreshHelpers, send, connect, installVsix };
 if (require.main === module) connect(...process.argv.slice(2)).catch(error => {
   process.stderr.write(`codex-backend: ${error.message}\n`); process.exitCode = 1;
 });

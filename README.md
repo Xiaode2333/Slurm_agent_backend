@@ -79,6 +79,36 @@ bash /absolute/Slurm_agent_backend/scripts/connect_codex_backend.sh status
 后端不明确时，使用 `CODEX_BACKEND_JOB=JOB_ID` 指定。`status` 的 `window.verified=true`
 表示当前窗口有活跃 relay 证据，`backendAvailable=true` 单独不能证明侧边栏已经连接。
 
+## Bouchet / Grace 兼容入口
+
+原有脚本保留 Bouchet 的 npm CLI 配置（`~/.npm-global/bin/codex`，`0.160.1`）。
+Grace 使用 standalone CLI（`~/.local/bin/codex`，`0.161.0`）和独立入口：
+
+```bash
+# 在 Slurm_agent_backend 仓库根目录提交；先确认目标集群为 Grace。
+bash scripts/agent_tmux_server_grace.sh check
+sbatch scripts/agent_tmux_server_grace.sh
+sbatch scripts/vscode_slurm_grace.sh
+# 在目标项目的 VS Code Tunnel 集成终端中：
+CODEX_BACKEND_JOB=JOB_ID /absolute/Slurm_agent_backend/scripts/connect_codex_backend_grace.sh
+```
+
+Grace Tunnel 默认使用共享 `week` CPU 分区；不要未经容量核查改投 GPU/group 分区。
+资源、account/QOS 可通过 `sbatch` 显式覆盖。Tunnel 和后端允许不同节点，
+条件是共享私有组件/后端注册目录，并支持具有可信 host key 的 batch-mode SSH。
+提交后端时如仓库不在提交目录，显式设置 `CODEX_BACKEND_ROOT`。
+`VSCODE_BIN` 可覆盖 Grace 的站点 VS Code CLI 路径。
+
+公共组件在 Grace 完整主机名上自动选择 Grace，其余主机保留 Bouchet 默认。
+短主机名或自定义安装可显式导出 `CODEX_BACKEND_CLUSTER=bouchet|grace`、
+`CODEX_BACKEND_CLI=/absolute/path` 和 `CODEX_BACKEND_CLI_VERSION=0.160.1|0.161.0`；
+Tunnel、后端和连接终端必须采用一致配置。Grace 入口会显式设置集群。
+Node 22 支持 PATH、`prime-agent-node` 和 `pi-node` 两种用户安装。
+不同 CLI 版本的后端不会被错误绑定。
+
+更新连接器后，在执行命令的同一个窗口运行 **Developer: Reload Window** 并重试。
+组件路径按真实路径校验，支持 `/home` 与 `/vast` 别名，同时拒绝受管理目录外的组件。
+
 ## agent 分区：Tunnel 与后端分开运行
 
 新增的三个 `agent_tmux*` 脚本适用于提供 `agent` CPU 分区的站点。
@@ -91,9 +121,9 @@ sbatch scripts/agent_tmux_tunnel.sh
 sbatch scripts/agent_tmux_server.sh
 ```
 
-站点 account/QOS 要求仍通过 `sbatch` 参数提供。两作业必须运行在同一节点，
-否则 Tunnel 无法访问后端的 Unix socket；必要时在第二次提交中指定
-`--nodelist=FIRST_JOB_NODE`，以实际获配节点为准，不保证第二个作业立即启动。
+站点 account/QOS 要求仍通过 `sbatch` 参数提供。同节点直接访问 Unix socket；
+不同节点由新版连接器建立经过验证的 SSH Unix socket 转发，具体条件见
+[跨节点传输](docs/backend.md)。可用 `CODEX_BACKEND_JOB=SERVER_JOB_ID` 明确选择后端。
 从仓库根目录提交，分别查看 `agent_tmux_tunnel_JOB_ID.out` 和
 `agent_tmux_server_JOB_ID.out`。Tunnel 详细输出追加到 `vscode_slurm.out`，
 后端详细输出追加到 `agent_tmux_server.out`。

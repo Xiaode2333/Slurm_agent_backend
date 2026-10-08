@@ -28,11 +28,18 @@ for (const openedProject of [true, false]) test(`helper connects ${openedProject
     cli: C.CLI, version: C.CLI_VERSION, hostname: os.hostname(), jobId: '42', pid: process.pid, startTicks: C.processIdentity(process.pid) };
   const descriptorFile = path.join(root, 'backends', 'backend.json'); C.writeJson(descriptorFile, descriptor);
   const component = path.resolve(__dirname, '..');
+  const testHome = path.join(root, 'home');
+  const installRoot = C.privateDirectory(path.join(root, 'managed-components'));
+  fs.mkdirSync(path.join(testHome, '.local/share'), { recursive: true });
+  fs.symlinkSync(installRoot, path.join(testHome, '.local/share/codex-backend'));
+  const requestedComponent = C.privateDirectory(path.join(installRoot, 'a'.repeat(64)));
+  fs.writeFileSync(path.join(requestedComponent, 'installed'), '');
   const localC = { ...C, stateRoot: () => root, dispatcherLauncher: () => path.join(root, 'dispatcher.sh') };
   const moduleObject = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(component, 'helper/extension.cjs'), 'utf8'), {
     require(name) {
       if (name === './runtime.json') return { component };
+      if (name === 'node:os') return { ...os, homedir: () => testHome };
       if (name === path.join(component, 'common.cjs')) return localC;
       return require(name);
     }, module: moduleObject, process, console, setImmediate,
@@ -64,7 +71,10 @@ for (const openedProject of [true, false]) test(`helper connects ${openedProject
   const first = context(); const connector = await moduleObject.exports.activate(first, api);
   assert.deepEqual(C.readJson(path.join(root, 'helpers', C.hash('test-window') + '.json')).hooks, ['distinct-terminal-hook']);
   t.after(() => first.subscriptions.forEach(item => item.dispose()));
-  const request = { requestId: crypto.randomUUID(), descriptor: descriptorFile, project: root };
+  const request = { requestId: crypto.randomUUID(), descriptor: descriptorFile, project: root, component: requestedComponent };
+  const outsideComponent = C.privateDirectory(path.join(root, 'b'.repeat(64)));
+  fs.writeFileSync(path.join(outsideComponent, 'installed'), '');
+  await assert.rejects(connector.connect({ ...request, component: outsideComponent }), /Unmanaged connector component/);
   const response = await connector.connect(request); assert.equal(response.status, 'reloading'); await response.afterReply();
   assert.equal(settings.get('unrelated'), 'keep'); assert.equal(updates.length, 1);
   assert.deepEqual({ ...global.get('originalCli') }, { hadValue: true, value: '/original/codex' });

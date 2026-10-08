@@ -3,7 +3,8 @@
 resolve_codex_node() {
     local candidate
     for candidate in "$(command -v node || true)" \
-        "$HOME/.local/share/prime-agent-node/current/bin/node"; do
+        "$HOME/.local/share/prime-agent-node/current/bin/node" \
+        "$HOME/.local/share/pi-node/current/bin/node"; do
         if [[ -x "$candidate" && "$("$candidate" --version)" == v22.* ]]; then
             printf '%s\n' "$candidate"
             return 0

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 component_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-codex_bin="$HOME/.npm-global/bin/codex"
+node_bin="$(cat "$component_dir/node-path")"
+codex_bin="$("$node_bin" -e 'process.stdout.write(require(process.argv[1]).CLI)' "$component_dir/common.cjs")"
 args=("$@")
 index=0
 while ((index < ${#args[@]})); do
@@ -21,7 +22,6 @@ while ((index < ${#args[@]})); do
                     echo "unsupported backend startup option: ${args[j]}" >&2; exit 2
                 fi
             done
-            node_bin="$(cat "$component_dir/node-path")"
             exec "$node_bin" "$component_dir/relay.cjs"
             ;;
         *) break ;;

@@ -69,8 +69,9 @@ async function activate(context, api) {
       const descriptor = C.validateDescriptor(value, project, os.hostname(), { allowShared: true });
       const chosenComponent = request.component || component;
       if (request.component) {
-        const installRoot = path.join(os.homedir(), '.local/share/codex-backend') + path.sep;
-        if (!path.resolve(chosenComponent).startsWith(installRoot) || !/^[a-f0-9]{64}$/.test(path.basename(chosenComponent)) ||
+        const installRoot = C.canonical(path.join(os.homedir(), '.local/share/codex-backend'));
+        const actualComponent = C.canonical(chosenComponent);
+        if (path.dirname(actualComponent) !== installRoot || !/^[a-f0-9]{64}$/.test(path.basename(actualComponent)) ||
             !fs.existsSync(path.join(C.privateDirectory(chosenComponent), 'installed'))) throw new Error('Unmanaged connector component');
       }
       const launcher = C.dispatcherLauncher(chosenComponent);

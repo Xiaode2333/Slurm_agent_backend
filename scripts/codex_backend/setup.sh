@@ -28,7 +28,7 @@ if [[ ! -f "$component_dir/installed" ]]; then
     if [[ ! -e "$component_dir/node_modules" && ! -L "$component_dir/node_modules" ]]; then
         ln -s "$dependency_dir/node_modules" "$component_dir/node_modules"
     fi
-    [[ "$(readlink -f "$component_dir/node_modules")" == "$dependency_dir/node_modules" ]] || { echo 'Unexpected component dependency path' >&2; exit 2; }
+    [[ "$(readlink -f "$component_dir/node_modules")" == "$(readlink -f "$dependency_dir/node_modules")" ]] || { echo 'Unexpected component dependency path' >&2; exit 2; }
     "$node_bin" "$component_dir/package-helper.cjs" "$component_dir" >&2
     chmod +x "$component_dir/launcher.sh"
     touch "$component_dir/installed"
