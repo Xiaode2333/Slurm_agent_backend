@@ -110,6 +110,10 @@ async function activate(context, api) {
       try {
         const request = JSON.parse(buffer.split('\n')[0]);
         if (request.action === 'status') { connection.end(JSON.stringify(connectionStatus()) + '\n'); return; }
+        if (request.action === 'refresh') {
+          await refreshTerminals();
+          connection.end(JSON.stringify({ status: 'refreshed' }) + '\n'); return;
+        }
         if (request.action !== 'connect') throw new Error('Unknown connector action');
         const { afterReply, ...reply } = await connect(request);
         connection.end(JSON.stringify(reply) + '\n', () => { if (afterReply) setImmediate(afterReply); });
@@ -143,19 +147,35 @@ async function activate(context, api) {
       C.writeJson(claim, value); claims.add(claim);
     }
   };
+  const terminalOwners = new WeakMap();
   const registerTerminal = async terminal => {
     try {
       const pid = await terminal.processId;
-      terminals.set(pid, { pid, startTicks: C.processIdentity(pid) });
+      const previous = terminalOwners.get(terminal);
+      if (previous && previous !== pid) terminals.delete(previous);
+      const startTicks = C.processIdentity(pid);
+      terminalOwners.set(terminal, pid);
+      terminals.set(pid, { pid, startTicks });
       const env = fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0');
       const value = env.find(x => x.startsWith('VSCODE_IPC_HOOK_CLI='))?.slice('VSCODE_IPC_HOOK_CLI='.length);
       if (value) hooks.add(value);
       register();
     } catch { /* Terminal may have exited before registration. */ }
   };
-  await Promise.all((vscode.window.terminals || []).map(registerTerminal));
-  register();
+  async function refreshTerminals() {
+    for (const [pid, terminal] of terminals) {
+      try { if (C.processIdentity(pid) !== terminal.startTicks) terminals.delete(pid); }
+      catch { terminals.delete(pid); }
+    }
+    await Promise.all((vscode.window.terminals || []).map(registerTerminal));
+    register();
+  }
+  await refreshTerminals();
   if (vscode.window.onDidOpenTerminal) context.subscriptions.push(vscode.window.onDidOpenTerminal(registerTerminal));
+  // Persistent/reused terminals can replace their shell PID and CLI hook
+  // without creating a new Terminal object or firing onDidOpenTerminal.
+  if (vscode.window.onDidChangeActiveTerminal) context.subscriptions.push(vscode.window.onDidChangeActiveTerminal(refreshTerminals));
+  if (vscode.window.onDidChangeTerminalShellIntegration) context.subscriptions.push(vscode.window.onDidChangeTerminalShellIntegration(event => registerTerminal(event.terminal)));
   context.subscriptions.push({ dispose() {
     disposed = true;
     server.close();

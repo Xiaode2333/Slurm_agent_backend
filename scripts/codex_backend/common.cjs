@@ -47,10 +47,25 @@ function checkCli() {
   return CLI_VERSION;
 }
 function validateDescriptor(descriptor, project, host = os.hostname(), { allowShared = false } = {}) {
+  const transport = descriptor.transport;
   if (descriptor.schema !== 'codex_backend_v1' || descriptor.status !== 'ready' ||
-      descriptor.hostname !== host || descriptor.cli !== CLI || descriptor.version !== CLI_VERSION ||
-      (!allowShared && canonical(descriptor.project) !== canonical(project)) ||
-      descriptor.startTicks !== processIdentity(descriptor.pid)) {
+      (!transport && descriptor.hostname !== host) || descriptor.cli !== CLI || descriptor.version !== CLI_VERSION ||
+      (!allowShared && canonical(descriptor.project) !== canonical(project))) {
+    throw new Error('Backend descriptor is stale, incompatible, or belongs to another node/project');
+  }
+  if (transport) {
+    const T = require('./ssh-transport.cjs');
+    const upstream = readJson(transport.sourceDescriptor);
+    const args = fs.readFileSync(`/proc/${transport.pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
+    const forward = args.indexOf('-L');
+    if (transport.kind !== 'ssh-unix-v1' || transport.localHostname !== host || upstream.transport ||
+        transport.startTicks !== processIdentity(transport.pid) ||
+        T.fingerprint(upstream) !== transport.fingerprint ||
+        T.fingerprint({ ...descriptor, socket: transport.remoteSocket, transport: undefined }) !== transport.fingerprint ||
+        forward < 0 || args[forward + 1] !== `${descriptor.socket}:${transport.remoteSocket}` || args.at(-1) !== descriptor.hostname) {
+      throw new Error('SSH backend descriptor is stale or belongs to another node/process');
+    }
+  } else if (descriptor.startTicks !== processIdentity(descriptor.pid)) {
     throw new Error('Backend descriptor is stale, incompatible, or belongs to another node/project');
   }
   const socket = fs.statSync(descriptor.socket);
@@ -71,8 +86,8 @@ function selectBackend({ root = stateRoot(), project, env = process.env, host = 
     const file = path.join(dir, name);
     try {
       const value = readJson(file);
-      if (value.hostname !== host ||
-          !value.project) continue;
+      if ((value.transport ? value.transport.localHostname !== host : value.hostname !== host) ||
+          (env.CODEX_BACKEND_HOST && value.hostname !== env.CODEX_BACKEND_HOST) || !value.project) continue;
       if (job && value.jobId === job) knownAllocation = true;
       validateDescriptor(value, project, host, { allowShared: true });
       candidates.push({ file, descriptor: value });
@@ -80,9 +95,11 @@ function selectBackend({ root = stateRoot(), project, env = process.env, host = 
   }
   // A Tunnel can run in a separate allocation on this same node. Prefer its
   // allocation when registered; otherwise require a unique node/project match.
-  const projectCandidates = candidates.filter(x => canonical(x.descriptor.project) === project);
+  const native = candidates.filter(x => !x.descriptor.transport);
+  const preferred = !env.CODEX_BACKEND_JOB && !env.CODEX_BACKEND_HOST && native.length ? native : candidates;
+  const projectCandidates = preferred.filter(x => canonical(x.descriptor.project) === project);
   const matches = job && (knownAllocation || env.CODEX_BACKEND_JOB) ? candidates.filter(x => x.descriptor.jobId === job) :
-    projectCandidates.length ? projectCandidates : candidates;
+    projectCandidates.length ? projectCandidates : preferred;
   if (matches.length !== 1) {
     throw new Error(`Expected one backend on ${host}${job && knownAllocation ? ` in allocation ${job}` : ''}; found ${matches.length}. ${errors.join('; ')}`);
   }

@@ -150,6 +150,7 @@ def test_tunnel_device_login_without_terminal_input(tmp_path, cached, login_stat
         '[[ "${VSCODE_CLI_USE_FILE_KEYCHAIN:-}" == 1 ]] || exit 7\n'
         '[[ "${VSCODE_CLI_DISABLE_KEYCHAIN_ENCRYPT:-}" == 1 ]] || exit 7\n'
         '[[ "$(stat -c %a "$VSCODE_CLI_DATA_DIR")" == 700 ]] || exit 7\n'
+        'if [[ "$*" == "--version" ]]; then echo "code fixture"; exit 0; fi\n'
         'if [[ "$*" == "tunnel user show" ]]; then\n'
         '  [[ -f "$VSCODE_CLI_DATA_DIR/token.json" ]] || exit 1\n'
         "  echo 'logged in with provider GitHub Account'\n"
@@ -177,6 +178,8 @@ def test_tunnel_device_login_without_terminal_input(tmp_path, cached, login_stat
          + command + '\nbash -c "$tunnel_command"',
          "test", str(cli), str(log), str(ROOT / "scripts/codex_backend"), str(data_dir)],
         input="terminal input must be ignored\n", capture_output=True, text=True, timeout=10,
+        # This exercises non-Slurm device login even when checks run in a job.
+        env={key: value for key, value in os.environ.items() if key != "SLURM_JOB_ID"},
     )
     expected_status = login_status if not cached else 0
     if not persisted:
@@ -197,7 +200,7 @@ def test_codex_real_unix_websocket_regressions():
     if not node or not (ROOT / "scripts/codex_backend/node_modules/ws").is_dir():
         pytest.skip("Run npm ci --prefix scripts/codex_backend to enable Node regressions")
     result = subprocess.run(
-        [node, "--test", "test/backend.test.cjs", "test/helper.test.cjs"], cwd=ROOT / "scripts/codex_backend",
+        [node, "--test", "test/backend.test.cjs", "test/helper.test.cjs", "test/ssh-transport.test.cjs"], cwd=ROOT / "scripts/codex_backend",
         capture_output=True, text=True, timeout=40,
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -212,6 +215,7 @@ def test_tunnel_window_survives_tmux_log_redirection(tmp_path):
         "#!/usr/bin/env bash\n"
         "set -eu\n"
         "sleep 0.5\n"
+        'if [[ "$*" == "--version" ]]; then echo "code fixture"; exit 0; fi\n'
         'if [[ "$*" == "tunnel user show" ]]; then exit 0; fi\n'
         '[[ "$*" == "tunnel --accept-server-license-terms" ]] || exit 8\n'
         "echo 'Connected: https://vscode.dev/tunnel/test'\n"
@@ -222,7 +226,7 @@ def test_tunnel_window_survives_tmux_log_redirection(tmp_path):
     socket = tmp_path / "tmux.sock"
     base = [tmux, "-f", "/dev/null", "-S", str(socket)]
     command = shlex.join([
-        "env", f"VSCODE_CLI_DATA_DIR={data_dir}", "bash",
+        "env", "-u", "SLURM_JOB_ID", f"VSCODE_CLI_DATA_DIR={data_dir}", "bash",
         str(ROOT / "scripts/codex_backend/tunnel-window.sh"), str(cli), str(log),
     ])
     try:

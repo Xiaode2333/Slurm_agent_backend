@@ -101,9 +101,27 @@ function installVsix() {
     execFileSync('code', ['--install-extension', vsix, '--force'], { stdio: 'inherit', timeout: 120000 });
   }
 }
+async function refreshHelpers(project, root = C.stateRoot()) {
+  const dir = path.join(root, 'helpers');
+  const sockets = new Set();
+  for (const name of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
+    if (!name.endsWith('.json')) continue;
+    try {
+      const item = C.readJson(path.join(dir, name));
+      if (item.hostname === os.hostname() && item.startTicks === C.processIdentity(item.pid) &&
+          (!item.projects?.length || item.projects.includes(C.canonical(project))) && fs.statSync(item.socket).isSocket()) sockets.add(item.socket);
+    } catch { /* Expired registrations cannot refresh or claim a terminal. */ }
+  }
+  // Refresh ownership only; never bind a window from a workspace match alone.
+  await Promise.all([...sockets].map(async socket => {
+    try { await send(socket, { action: 'refresh' }); }
+    catch { /* Legacy helpers need one window reload to support refresh. */ }
+  }));
+  return sockets.size;
+}
 async function connect(project, action = 'connect') {
   project = C.canonical(project);
-  const selected = C.selectBackend({ project });
+  const selected = await require('./ssh-transport.cjs').resolveBackend({ project });
   if (action === 'refresh-history') {
     const rpc = await C.rpcClient(selected.descriptor.socket, { timeout: 120000 });
     try { await rpc.request('thread/list', { limit: 1, cwd: project, useStateDbOnly: false }); }
@@ -124,12 +142,17 @@ async function connect(project, action = 'connect') {
       catch (error) { health = { error: error.message }; }
     }
     console.log(JSON.stringify({ project, backendAvailable: true, backend: { jobId: selected.descriptor.jobId,
-      hostname: selected.descriptor.hostname, pid: selected.descriptor.pid, startupProject: selected.descriptor.project }, window, health }, null, 2)); return;
+      hostname: selected.descriptor.hostname, pid: selected.descriptor.pid, startupProject: selected.descriptor.project,
+      transport: selected.descriptor.transport?.kind || 'local-unix', clientHostname: os.hostname() }, window, health }, null, 2)); return;
   }
   if (action !== 'connect') throw new Error('Usage: connect_codex_backend.sh [--project DIR] [connect|status|doctor|refresh-history|check]');
   const hook = process.env.VSCODE_IPC_HOOK_CLI;
   if (!hook) throw new Error('Run in a VS Code Tunnel integrated terminal');
   let helper = findHelper(project, hook);
+  if (!helper) {
+    await refreshHelpers(project);
+    helper = findHelper(project, hook);
+  }
   if (!helper || helper.component !== __dirname) {
     const installed = execFileSync('code', ['--list-extensions', '--show-versions'], { encoding: 'utf8', timeout: 30000 });
     const official = installed.split(/\r?\n/).find(line => line.startsWith('openai.chatgpt@'));
@@ -139,6 +162,10 @@ async function connect(project, action = 'connect') {
     }
     execFileSync('code', ['--install-extension', `openai.chatgpt@${C.EXTENSION_VERSION}`, '--force'], { stdio: 'inherit', timeout: 120000 });
     installVsix();
+    if (!helper && await refreshHelpers(project)) {
+      helper = findHelper(project, hook);
+      if (!helper) throw new Error('Connector installed, but the active window still has stale terminal PID/hook registrations. Run Developer: Reload Window once, then repeat this command. Backend restart is not needed.');
+    }
     const deadline = Date.now() + 90000;
     do {
       helper = findHelper(project, hook);
@@ -146,8 +173,8 @@ async function connect(project, action = 'connect') {
       await delay(250);
     } while (Date.now() < deadline);
     if (!helper) throw new Error(`No connector registration matched this terminal on ${os.hostname()} in ${C.canonical(project)} (hook ${hook}). The extension may be disabled, the workspace untrusted, or terminal ownership unavailable`);
-    if (helper.component !== __dirname && C.canonical(selected.descriptor.project) !== project) {
-      throw new Error('Connector updated, but this window still runs the old single-project helper. Run Developer: Reload Window once, then repeat the connection command. The backend keeps running.');
+    if (helper.component !== __dirname && (selected.descriptor.transport || C.canonical(selected.descriptor.project) !== project)) {
+      throw new Error('Connector updated, but this window still runs the old helper, which cannot validate this remote/project binding. Run Developer: Reload Window once, then repeat the connection command. The backend keeps running.');
     }
   }
   const requestId = crypto.randomUUID();
@@ -159,7 +186,7 @@ async function connect(project, action = 'connect') {
   if (result.status === 'failed') throw new Error(result.error);
   console.log(`CONNECTED project=${result.project} job=${result.jobId} node=${result.hostname} backend_pid=${result.backendPid} sessions=${result.partial ? '>=' : ''}${result.threadCount} active_on_page=${result.activeIds.length}`);
 }
-module.exports = { findHelper, send, connect, installVsix };
+module.exports = { findHelper, refreshHelpers, send, connect, installVsix };
 if (require.main === module) connect(...process.argv.slice(2)).catch(error => {
   process.stderr.write(`codex-backend: ${error.message}\n`); process.exitCode = 1;
 });

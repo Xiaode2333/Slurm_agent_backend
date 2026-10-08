@@ -11,7 +11,7 @@ for file in scripts/codex_backend/*.cjs scripts/codex_backend/helper/*.cjs scrip
     "$node_bin" --check "$file"
 done
 while IFS= read -r -d '' file; do bash -n "$file"; done < <(find scripts -name '*.sh' -print0)
-"$python_executable" -m py_compile tests/python/test_codex_backend.py
+"$python_executable" -m compileall -q tests/python
 npm test --prefix scripts/codex_backend
-"$python_executable" -m pytest -q tests/python/test_codex_backend.py
+"$python_executable" -m pytest -q tests/python
 echo 'PASS local backend syntax/compilation and regression checks'

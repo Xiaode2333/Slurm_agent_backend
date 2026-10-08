@@ -3,7 +3,7 @@
 # The agent partition allows at most 2 concurrent jobs per user:
 #   sbatch scripts/agent_tmux_tunnel.sh   # job 1: VS Code tunnel only
 #   sbatch scripts/agent_tmux_server.sh   # job 2: codex backend only
-# Both share the node when possible so the tunnel can reach the backend socket.
+# Cross-node clients use authenticated SSH Unix-socket forwarding.
 #SBATCH --partition=agent
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
@@ -44,6 +44,7 @@ while true; do
         IFS=: read -r dead status signal <<< "$pane"
         if [[ -n "$signal" ]]; then status=$((128 + signal)); fi
         [[ "$status" =~ ^[0-9]+$ ]] || status=1
+        printf 'TUNNEL_EXIT job=%s status=%s\n' "$SLURM_JOB_ID" "$status"
         printf '%s\n' "$status" > "$runtime/exit-code"
         exit "$status"
     fi

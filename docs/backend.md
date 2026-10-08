@@ -52,6 +52,19 @@ are stored without hostname encryption in a mode-600 file inside a mode-700
 directory, allowing later allocations to reuse them across nodes. A revoked or
 expired token can still require browser authentication.
 
+Under Slurm, the startup helper separates reusable credentials from live state:
+CLI locks, server PID/log files and the VS Code agent-host registry are kept in
+a private allocation-local directory. Cached server binaries may be reused,
+but their old PID/socket metadata is never copied. Refreshed login credentials
+are saved atomically to the private credential directory. Tunnel names default
+to the current node plus allocation ID, avoiding two nodes advertising one
+endpoint. `VSCODE_TUNNEL_NAME` and `VSCODE_TUNNEL_LOG_LEVEL` override the name and
+log level. Use a current desktop VS Code client or `vscode.dev`; the server
+version is selected by the client, not the directory name of the installed CLI.
+Old clients can start incompatible servers and cannot be upgraded by this helper.
+The standalone agent launcher follows the exact tunnel pane's exit status;
+a historical URL or surviving admin shell never counts as tunnel health.
+
 For optional debugging, the startup output gives the node and allocation-specific
 tmux server. Enter the allocation using `srun --jobid=<job-id> --overlap --pty bash`,
 then attach using `tmux -L codex-<job-id> attach -t codex`. Windows are `server`,
@@ -87,16 +100,50 @@ five-second wait for the helper's explicit per-host decision. A registered
 unbound window chooses the normal CLI immediately.
 **Codex Backend: Use Local Codex in This Window** unbinds only the current window;
 the shared dispatcher stays configured for other windows. Unbound windows use the normal CLI.
-When upgrading an already active single-project helper in another project,
-run **Developer: Reload Window** once after installation and repeat the
-connection command. The old helper cannot apply a shared-project binding;
-the connector identifies this migration case explicitly.
+When upgrading an already active helper, run **Developer: Reload Window**
+once after installation and repeat the connection command. Old helpers cannot
+validate the new cross-node transport or apply a shared-project binding;
+the connector identifies this migration case explicitly. Persistent/reused
+terminals can replace their shell PID and CLI hook without opening a new
+terminal object. The helper refreshes ownership on active-terminal and shell
+integration changes, and the connector requests a registration refresh before
+reporting a missing match. It never guesses a window from a project match alone.
+Backend restart cannot fix stale frontend registrations. If a reload still
+reports an old helper, compare the registered component with the freshly
+installed component; installing a newer component after the reload requires
+that newer extension to be activated before binding.
 
-An already running Tunnel in another allocation can connect when it is on the backend's node and there is a unique valid backend there.
+A Tunnel in another allocation or on another node can connect to the same
+backend. Same-node Unix sockets remain the preferred direct transport. If no
+local backend matches, the connector verifies remote descriptors over SSH and
+uses `ssh-unix-v1`: an authenticated, encrypted OpenSSH stream-local forward
+carrying the existing WebSocket/JSON-RPC protocol. No TCP listener, public port,
+backend restart or new app-server is required. The nodes must share the private
+backend/component registry and provide batch-mode SSH access with trusted host
+keys. Authentication/host-key failure is an error, never an insecure fallback.
+
 One backend may serve several projects. Run the connector from the intended
-project directory, or pass `--project DIR`. A registered
-backend in the terminal's own allocation takes precedence. Multiple node/project
-candidates produce an error. A Tunnel on another node cannot reach the Unix socket.
+project directory, or pass `--project DIR`. A registered backend in the
+terminal's own allocation takes precedence; otherwise a unique valid local
+backend is preferred. Remote discovery verifies process start identity,
+version and socket ownership on the actual backend node. Ambiguous remote
+matches require an explicit selection:
+
+```bash
+CODEX_BACKEND_JOB=<backend-job-id> bash scripts/connect_codex_backend.sh
+# Or select a registered backend's exact hostname:
+CODEX_BACKEND_HOST=<backend-hostname> bash scripts/connect_codex_backend.sh doctor
+```
+
+The SSH forward has a private node-local socket and a per-client-host descriptor.
+Reconnects reuse it only while the SSH PID/start identity and original backend
+fingerprint still match. A real initialize response is required before a new
+forward is registered. SSH liveness checks bound lost-node detection; transport
+loss fails the client without replaying requests or starting a local backend.
+The forward belongs to the client allocation and can survive a window reload,
+not the end of that allocation. New client allocations establish a new forward.
+`doctor` reports both the backend and client host plus the transport kind;
+a successful probe is not proof of an authenticated sidebar connection.
 
 Success requires a real official-extension initialize response and a successful
 sidebar thread-list request through the relay. The command then prints the
@@ -123,7 +170,8 @@ $HOME/.npm-global/bin/codex resume <thread-id> --remote unix://<socket-path>
 
 ## Lifecycle and private state
 
-Unix sockets are node-local and user-private. Backend descriptors, helper
+Unix sockets are node-local and user-private; cross-node clients reach them
+only through the authenticated SSH transport described above. Backend descriptors, helper
 registrations and connection receipts live in the private user directory
 `$HOME/.local/state/codex-backend`. Immutable component copies share an integrity-checked dependency cache and live
 under `$HOME/.local/share/codex-backend`; npm uses the committed lock file and
@@ -172,6 +220,49 @@ bash scripts/connect_codex_backend.sh doctor
 
 Status separates backend availability from proof of this window's actual relay.
 Doctor adds a bounded initialize probe without scanning thread history.
+
+### Sidebar flicker and Chinese IME
+
+A stable backend/relay does not establish Webview stability. If Chinese
+composition is interrupted while English input works, check for replacement of
+the composer and account-query error transitions before restarting services.
+[Upstream issue 49917](https://github.com/openai/codex/issues/49917) describes a
+conditional React wrapper that can remount the conversation on account errors.
+The inspected 26.930.61225 build contains that pattern; this is not a claim that
+all flicker or IME errors share one cause.
+
+An explicitly authorized local workaround keeps the router/children wrapper
+mounted in both normal and account-error branches. It must preserve all earlier
+permission, account-deactivation and recovery gates. Require exact version and
+asset hashes, one unique expression match, syntax and boundary/gate checks, and
+a private original-byte backup before applying it. The connector does **not**
+automatically patch the official extension. Private backups and guarded rollback
+manifests live under `$HOME/.local/state/codex-backend/webview-patches`; vendor
+assets and runtime backups must not enter Git. Rollback must refuse an updated
+or otherwise changed extension rather than overwriting it.
+
+The opt-in tool runs on the Linux remote extension host and supports only the
+exact inspected build and asset hashes above. Check the installed extension
+before applying it; save the returned private manifest path for rollback:
+
+```bash
+node scripts/codex_backend/webview-ime.cjs check
+node scripts/codex_backend/webview-ime.cjs apply
+node scripts/codex_backend/webview-ime.cjs rollback /path/to/private/manifest.json
+```
+
+Pass the extension directory explicitly to `check` or `apply` if it is not at
+the default remote-extension location. A different version or modified asset
+is refused without replacement. Backend startup and connection never invoke
+this tool automatically.
+
+After saving unsent text, run **Developer: Reload Webviews**, not **Reload Window**,
+to load the workaround, then test sustained Chinese input, candidate selection
+and cursor movement. Source/fixture checks are not runtime IME acceptance.
+Backend/SSH restart, logout and CLI downgrade are unnecessary for this change.
+The workaround does not repair cloud-request failures and may be replaced by
+extension reinstallation/update; re-inspect a new build rather than patching it
+blindly. Remove the workaround when an upstream fix is verified locally.
 
 ## Verification
 

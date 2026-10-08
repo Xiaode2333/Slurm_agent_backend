@@ -40,6 +40,8 @@ for (const openedProject of [true, false]) test(`helper connects ${openedProject
   const global = new Map(), workspace = new Map(), settings = new Map([['cliExecutable', '/original/codex'], ['unrelated', 'keep']]);
   const commands = [], registered = new Map(), updates = [];
   const terminalListeners = new Set();
+  const activeTerminalListeners = new Set();
+  const shellIntegrationListeners = new Set();
   const terminalProcess = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
     env: { ...process.env, VSCODE_IPC_HOOK_CLI: 'distinct-terminal-hook' }, stdio: 'ignore', cwd: root,
   });
@@ -54,7 +56,9 @@ for (const openedProject of [true, false]) test(`helper connects ${openedProject
     }; } },
     extensions: { getExtension: () => ({ packageJSON: { version: C.EXTENSION_VERSION }, async activate() {} }) },
     window: { terminals: [{ processId: Promise.resolve(terminalProcess.pid) }], showInformationMessage() {}, registerUriHandler() { return { dispose() {} }; },
-      onDidOpenTerminal(callback) { terminalListeners.add(callback); return { dispose() { terminalListeners.delete(callback); } }; } },
+      onDidOpenTerminal(callback) { terminalListeners.add(callback); return { dispose() { terminalListeners.delete(callback); } }; },
+      onDidChangeActiveTerminal(callback) { activeTerminalListeners.add(callback); return { dispose() { activeTerminalListeners.delete(callback); } }; },
+      onDidChangeTerminalShellIntegration(callback) { shellIntegrationListeners.add(callback); return { dispose() { shellIntegrationListeners.delete(callback); } }; } },
     commands: { async executeCommand(command) { commands.push(command); }, registerCommand(name, callback) { registered.set(name, callback); return { dispose() {} }; } },
   };
   const first = context(); const connector = await moduleObject.exports.activate(first, api);
@@ -100,6 +104,21 @@ for (const openedProject of [true, false]) test(`helper connects ${openedProject
   assert.equal(commands.filter(c => c === 'workbench.action.reloadWindow').length, 1);
   assert.equal(restoredConnector.connectionStatus().mode, 'slurm');
   assert.equal(restoredConnector.connectionStatus().project, root);
+  // The same Terminal object is reused, but its bootstrap shell/PID/hook died.
+  // There is deliberately no onDidOpenTerminal event for the replacement.
+  const replacement = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
+    env: { ...process.env, VSCODE_IPC_HOOK_CLI: 'respawned-terminal-hook' }, stdio: 'ignore', cwd: root,
+  });
+  t.after(() => replacement.kill());
+  terminal.processId = Promise.resolve(replacement.pid);
+  await require('../connect.cjs').refreshHelpers(root, root);
+  assert.equal(require('../connect.cjs').findHelper(root, 'respawned-terminal-hook', root).sessionId, 'test-window-after-reload');
+  await Promise.all([...activeTerminalListeners].map(callback => callback(terminal)));
+  await Promise.all([...shellIntegrationListeners].map(callback => callback({ terminal })));
+  const owner = require('../connect.cjs').findHelper(root, 'respawned-terminal-hook', root);
+  assert.equal(owner.sessionId, 'test-window-after-reload');
+  assert.ok(owner.terminals.some(t => t.pid === replacement.pid));
+  assert.ok(!owner.terminals.some(t => t.pid === terminalProcess.pid));
   await registered.get('mdlammps.codexBackend.restore')();
   assert.equal(settings.get('cliExecutable'), path.join(root, 'dispatcher.sh'));
   assert.equal(C.readJson(path.join(root, 'results', repeat.requestId + '.json')).status, 'connected');
