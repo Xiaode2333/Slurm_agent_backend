@@ -11,6 +11,11 @@ OpenCode or Claude Code.
 | Pi | Its TUI inside an allocation-specific tmux server | Persistent `--mode rpc` JSONL broker |
 | Claude Code | Its TUI inside an allocation-specific tmux server | Persistent stream-json broker |
 
+The official Claude Code VS Code panel also has a separate
+[allocation-backed process wrapper](claude_backend.md), with Claude-only and
+combined Codex/Claude launchers. It uses the native Claude extension, while the
+generic TUI/JSONL services below keep their existing interfaces.
+
 ## Submit and attach
 
 Install and authenticate the desired CLI first. Node 22, npm, tmux and the

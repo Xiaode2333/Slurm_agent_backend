@@ -1,0 +1,15 @@
+{
+  "name": "claude-backend",
+  "publisher": "slurm-agent",
+  "displayName": "Claude Backend Connector",
+  "description": "Launch the official Claude Code extension's CLI inside a CPU Slurm allocation.",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.95.0" },
+  "main": "./extension.cjs",
+  "extensionKind": ["workspace"],
+  "activationEvents": ["*", "onUri"],
+  "contributes": { "commands": [
+    { "command": "slurm-agent.claudeBackend.status", "title": "Claude Backend: Show Connection Status" },
+    { "command": "slurm-agent.claudeBackend.restore", "title": "Claude Backend: Use Local Claude" }
+  ] }
+}

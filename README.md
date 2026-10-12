@@ -11,6 +11,26 @@ Slurm CPU allocation
   └── VS Code Tunnel ── remote workspace + connector helper
 ```
 
+## Claude Code 官方扩展与双 backend
+
+此前 Claude 支持 tmux TUI 和 stream-json；现在也支持通过官方扩展的
+`claudeProcessWrapper` 把 Claude 进程启动在 Slurm allocation 中。
+
+```bash
+./scripts/agent_tmux_server_claude.sh check
+sbatch scripts/agent_tmux_server_claude.sh
+# 或者 Codex + Claude 共用一个 CPU allocation：
+./scripts/agent_tmux_server_both.sh check
+sbatch scripts/agent_tmux_server_both.sh
+# 在 VS Code 的目标项目集成终端里：
+CLAUDE_BACKEND_JOB=JOB_ID /absolute/Slurm_agent_backend/scripts/connect_claude_backend.sh
+```
+
+连接后打开新的 Claude tab。默认自动使用该扩展自带的 CLI 版本；已有进程保持
+原版本。跨节点使用严格验证的 SSH。已有 Codex backend 不会被重启或取消。
+同项目已有 Codex SQLite lease 时，请等原作业结束后再启动双 backend，或使用另一个项目。
+详见 [Claude backend](docs/claude_backend.md) 的连接、断线恢复与资源说明。
+
 ## 已验证的版本
 
 | 组件 | 版本 / 路径 |

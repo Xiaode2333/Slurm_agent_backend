@@ -102,3 +102,39 @@ versions remain site-specific.
 
 Original usernames, hostnames, allocations, thread IDs, screenshots, credentials
 and detailed private receipts are omitted from this public extraction.
+
+## Claude official extension wrapper and combined allocation, 2026-10-12
+
+Added Claude-only and combined Codex/Claude tmux allocations, each requesting
+one CPU, 8 GiB, seven days and zero GPUs. The official Claude Code panel uses
+its documented process-wrapper setting. The independent connector preserves
+Codex settings and uses private window/process bindings. The combined worker
+keeps Codex's existing SQLite lease and version/history readiness checks.
+
+The complete local backend check and final focused regressions passed 44 existing
+Codex/harness Node tests, ten Claude tests and 26 Python tests, plus all
+JavaScript/shell/Python syntax checks. Coverage includes explicit version pins,
+CLI mismatches and the official SDK's equals-form session arguments. Tests cover native initialize/control bytes,
+turn retention after client loss, native resume exclusion, failure exit codes,
+SSH identity/quoting, allocation environment ownership, private descriptors,
+window-specific evidence, setting restoration and either combined service exiting.
+
+A separate formal one-CPU CPU allocation started both real services against a
+private temporary project. Installed Claude Code 2.1.291 supplied supervisor
+startup discovery; extension-bundled Claude Code 2.1.296 supplied actual process
+launches. Native authentication and a matching SDK initialize control response
+passed with exit zero, without a model prompt. Codex 0.162.1 passed actual
+initialize and history requests in the same allocation. An independent client
+on another compute node passed the same real Claude authentication/initialize
+checks through strict batch-mode SSH. Existing user allocations were preserved.
+The corrected finite verification allocation completed with exit zero and shut
+down its own services after validation. A real tmux regression covers TERM
+interrupting the allocation's blocking wait; using Bash builtin wait prevents
+foreground tmux from deferring the cleanup trap.
+
+The actual Claude panel's visual interaction and a model/tool turn were not
+exercised in this pass. Native protocol acceptance and mocked helper/window
+checks do not establish complete UI acceptance. On disconnect, a submitted turn
+can finish and be resumed from native history; a new SDK process cannot attach
+to a still-running process as it can to Codex's app-server. Permission/tool
+responses that require a lost UI remain pending rather than being auto-approved.

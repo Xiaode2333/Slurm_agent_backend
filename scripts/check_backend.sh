@@ -7,11 +7,12 @@ python_executable="${AGENT_TEST_PYTHON:-python}"
 cd "$source_root"
 command -v npm tmux "$python_executable" >/dev/null
 npm ci --ignore-scripts --prefer-offline --no-audit --no-fund --prefix scripts/codex_backend
-for file in scripts/codex_backend/*.cjs scripts/codex_backend/helper/*.cjs scripts/codex_backend/test/*.cjs; do
+for file in scripts/codex_backend/*.cjs scripts/codex_backend/helper/*.cjs scripts/codex_backend/test/*.cjs scripts/claude_backend/*.cjs scripts/claude_backend/helper/*.cjs scripts/claude_backend/test/*.cjs; do
     "$node_bin" --check "$file"
 done
 while IFS= read -r -d '' file; do bash -n "$file"; done < <(find scripts -name '*.sh' -print0)
 "$python_executable" -m compileall -q tests/python
 npm test --prefix scripts/codex_backend
+"$node_bin" --test scripts/claude_backend/test/*.test.cjs
 "$python_executable" -m pytest -q tests/python
 echo 'PASS local backend syntax/compilation and regression checks'
