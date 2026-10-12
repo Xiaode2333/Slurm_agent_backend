@@ -103,8 +103,29 @@ async function fixture(t, handle) {
   return { root, socket, descriptor, seen, wss };
 }
 
+test('bound dispatcher reports the running server version after an installed CLI update', async t => {
+  const f = await fixture(t);
+  const file = path.join(f.root, 'backend.json');
+  C.writeJson(file, { ...f.descriptor, version: '0.160.1' });
+  const cp = require('node:child_process');
+  const dispatcherPath = require.resolve('../dispatcher.cjs');
+  const original = require.cache[dispatcherPath];
+  t.after(() => { if (original) require.cache[dispatcherPath] = original; else delete require.cache[dispatcherPath]; });
+  t.mock.method(cp, 'spawn', (executable, args) => {
+    assert.equal(executable, process.execPath);
+    assert.equal(args[0], '-e');
+    assert.match(args[1], /codex-cli 0\.160\.1/);
+    return 'version-reply';
+  });
+  delete require.cache[dispatcherPath];
+  assert.equal(require('../dispatcher.cjs').dispatch(['--version'], { descriptor: file, project: f.root }), 'version-reply');
+});
+
 test('backend discovery selects allocation and rejects ambiguous, stale, or incompatible descriptors', async t => {
   const f = await fixture(t);
+  // A live allocation remains discoverable after the installed CLI is upgraded.
+  assert.equal(C.validateDescriptor({ ...f.descriptor, version: '0.160.1' }, f.root).version, '0.160.1');
+  await assert.rejects(C.rpcClient(f.socket, { expectedVersion: '999.0.0' }), /version mismatch/);
   const file = path.join(f.root, 'backends', 'one.json'); C.writeJson(file, f.descriptor);
   assert.equal(C.selectBackend({ root: f.root, project: f.root, env: { SLURM_JOB_ID: '42' } }).file, file);
   C.writeJson(path.join(f.root, 'backends', 'two.json'), { ...f.descriptor, jobId: '43' });
@@ -115,7 +136,7 @@ test('backend discovery selects allocation and rejects ambiguous, stale, or inco
   assert.throws(() => C.selectBackend({ root: f.root, project: f.root, env: { SLURM_JOB_ID: '42' } }), /found 0/);
   assert.equal(C.selectBackend({ root: f.root, project: f.root, env: { SLURM_JOB_ID: 'tunnel-job' } }).descriptor.jobId, '43');
   C.writeJson(file, f.descriptor);
-  for (const change of [{ startTicks: 'invalid' }, { version: '0.0.0' }, { hostname: 'other' }, { status: 'failed' }]) {
+  for (const change of [{ startTicks: 'invalid' }, { version: 'invalid' }, { hostname: 'other' }, { status: 'failed' }]) {
     assert.throws(() => C.validateDescriptor({ ...f.descriptor, ...change }, f.root), /descriptor/);
   }
   fs.chmodSync(file, 0o644); assert.throws(() => C.readJson(file), /private file/);

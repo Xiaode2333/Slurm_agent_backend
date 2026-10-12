@@ -86,7 +86,7 @@ async function ensure(file, { root = C.stateRoot(), verifyRemote = remoteVerify,
       localHostname: localHost, pid: child.pid, startTicks: C.processIdentity(child.pid),
       remoteSocket: remote.socket, sourceDescriptor: file, fingerprint: fingerprint(remote), log } };
     C.validateDescriptor(descriptor, remote.project, localHost, { allowShared: true });
-    const client = await C.rpcClient(socket, { timeout: 5000 });
+    const client = await C.rpcClient(socket, { timeout: 5000, expectedVersion: descriptor.version });
     client.close();
     C.writeJson(binding, descriptor);
     child.unref();
@@ -117,7 +117,7 @@ async function resolveBackend({ project, root = C.stateRoot(), env = process.env
     try {
       const d = C.readJson(file);
       if (d.transport || d.hostname === host || d.schema !== 'codex_backend_v1' || d.status !== 'ready' ||
-          d.cli !== C.CLI || d.version !== C.CLI_VERSION || !d.project ||
+          d.cli !== C.CLI || !C.isCliVersion(d.version) || !d.project ||
           (env.CODEX_BACKEND_JOB && d.jobId !== env.CODEX_BACKEND_JOB) ||
           (env.CODEX_BACKEND_HOST && d.hostname !== env.CODEX_BACKEND_HOST)) continue;
       candidates.push({ file, descriptor: d });

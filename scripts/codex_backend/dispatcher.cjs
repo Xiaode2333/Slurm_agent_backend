@@ -21,10 +21,10 @@ async function selectionForLaunch(args, pid = process.ppid, root = C.stateRoot()
 }
 function dispatch(args, selection = selectionFor()) {
   if (selection?.descriptor && args.length === 1 && args[0] === '--version') {
-    C.validateDescriptor(C.readJson(selection.descriptor), selection.project, require('node:os').hostname(), { allowShared: true });
-    // A running pinned server supplies the version. Do not cold-launch the
+    const descriptor = C.validateDescriptor(C.readJson(selection.descriptor), selection.project, require('node:os').hostname(), { allowShared: true });
+    // The running server supplies its recorded version, even after a CLI update. Do not cold-launch the
     // native CLI just to answer the extension's version query again.
-    return spawn(process.execPath, ['-e', `process.stdout.write('codex-cli ${C.CLI_VERSION}\\n')`], { stdio: 'inherit' });
+    return spawn(process.execPath, ['-e', `process.stdout.write('codex-cli ${descriptor.version}\\n')`], { stdio: 'inherit' });
   }
   if (selection?.descriptor && args.includes('app-server')) {
     const component = C.privateDirectory(selection.component);

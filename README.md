@@ -15,14 +15,16 @@ Slurm CPU allocation
 
 | 组件 | 版本 / 路径 |
 | --- | --- |
-| Codex CLI | `0.160.1`，`$HOME/.npm-global/bin/codex` |
+| Codex CLI | 已验证 `0.162.1`，`$HOME/.npm-global/bin/codex`（Bouchet 默认） |
 | 官方 Codex 扩展 | `openai.chatgpt`，`26.930.61225` |
 | Node.js | Node 22，原环境使用 `22.23.2` |
 | VS Code CLI | `1.140.0`，`$HOME/.local/share/vscode-cli/1.140.0/code` |
 | WebSocket 依赖 | `ws 8.22.0`，由 lock file 固定 |
 
-这些是此实现的兼容性目标，并非“最新版本”。后端和连接器会检查 Codex 版本。
-连接器使用官方扩展的开发用途 CLI override；升级 CLI 或扩展后需要重新验证兼容性。
+CLI 版本自动检测，不再因普通更新而拒绝启动。后端会核验实际 app-server 的
+initialize 版本和 history 响应；已运行后端保持自己的版本记录，不受随后安装更新影响。
+未来不兼容的协议、配置或 SQLite 变化仍可能失败，不能保证任意未来版本兼容。
+官方扩展版本是独立兼容性目标；连接器使用其开发用途 CLI override。
 
 ## 安装准备
 
@@ -34,7 +36,7 @@ Slurm CPU allocation
 git clone git@github.com:Xiaode2333/Slurm_agent_backend.git
 cd Slurm_agent_backend
 mkdir -p "$HOME/.npm-global"
-npm install --global --prefix "$HOME/.npm-global" @openai/codex@0.160.1
+npm install --global --prefix "$HOME/.npm-global" @openai/codex@latest
 "$HOME/.npm-global/bin/codex" login
 ```
 
@@ -81,8 +83,8 @@ bash /absolute/Slurm_agent_backend/scripts/connect_codex_backend.sh status
 
 ## Bouchet / Grace 兼容入口
 
-原有脚本保留 Bouchet 的 npm CLI 配置（`~/.npm-global/bin/codex`，`0.160.1`）。
-Grace 使用 standalone CLI（`~/.local/bin/codex`，`0.161.0`）和独立入口：
+原有脚本保留 Bouchet 的 npm CLI 路径（`~/.npm-global/bin/codex`）。
+Grace 使用 standalone CLI（`~/.local/bin/codex`）和独立入口；两者都自动检测版本：
 
 ```bash
 # 在 Slurm_agent_backend 仓库根目录提交；先确认目标集群为 Grace。
@@ -101,10 +103,11 @@ Grace Tunnel 默认使用共享 `week` CPU 分区；不要未经容量核查改�
 
 公共组件在 Grace 完整主机名上自动选择 Grace，其余主机保留 Bouchet 默认。
 短主机名或自定义安装可显式导出 `CODEX_BACKEND_CLUSTER=bouchet|grace`、
-`CODEX_BACKEND_CLI=/absolute/path` 和 `CODEX_BACKEND_CLI_VERSION=0.160.1|0.161.0`；
-Tunnel、后端和连接终端必须采用一致配置。Grace 入口会显式设置集群。
+`CODEX_BACKEND_CLI=/absolute/path`；如确需固定版本，可显式设置
+`CODEX_BACKEND_CLI_VERSION=0.162.1`（默认不固定，支持有效语义版本）。
+Tunnel、后端和连接终端必须采用一致路径配置。Grace 入口会显式设置集群。
 Node 22 支持 PATH、`prime-agent-node` 和 `pi-node` 两种用户安装。
-不同 CLI 版本的后端不会被错误绑定。
+连接时核验运行后端的实际版本，而不是要求它等于当前磁盘上的 CLI 版本。
 
 更新连接器后，在执行命令的同一个窗口运行 **Developer: Reload Window** 并重试。
 组件路径按真实路径校验，支持 `/home` 与 `/vast` 别名，同时拒绝受管理目录外的组件。
@@ -126,7 +129,7 @@ sbatch scripts/agent_tmux_server.sh
 [跨节点传输](docs/backend.md)。可用 `CODEX_BACKEND_JOB=SERVER_JOB_ID` 明确选择后端。
 从仓库根目录提交，分别查看 `agent_tmux_tunnel_JOB_ID.out` 和
 `agent_tmux_server_JOB_ID.out`。Tunnel 详细输出追加到 `vscode_slurm.out`，
-后端详细输出追加到 `agent_tmux_server.out`。
+后端详细输出同时追加到 `agent_tmux_server.out` 和作业专属日志，启动错误也可直接查看。
 
 进入对应计算节点后，用作业 ID 选择独立 tmux server：
 
@@ -192,6 +195,7 @@ find scripts -name '*.sh' -exec bash -n {} \;
 ```
 
 测试使用临时 socket、模拟 CLI 和独立 tmux server，不提交 Slurm 作业，也不需要真实 Codex 登录。
+版本相关夹具需要默认路径上已安装的 Codex CLI（只查询版本）。
 Python 测试依赖 `tmux`；安装 npm 依赖后才能执行完整 Node 回归。
 
 - [后端、连接器、存储与生命周期](docs/backend.md)

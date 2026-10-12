@@ -19,16 +19,13 @@ project="$(cd -- "${SLURM_SUBMIT_DIR:-$backend_root}" && pwd -P)"
 export PATH="$HOME/.local/share/pi-node/current/bin:$HOME/.local/bin:$PATH"
 export CODEX_BACKEND_CLUSTER=grace
 CODEX_BIN="${CODEX_BACKEND_CLI:-$HOME/.local/bin/codex}"
-cli_version="${CODEX_BACKEND_CLI_VERSION:-0.161.0}"
 for tool in node npm tmux flock zip; do
     command -v "$tool" >/dev/null || { echo "Missing required command: $tool" >&2; exit 2; }
 done
 [[ "$(node --version)" == v22.* ]] || { echo 'This backend requires Node 22' >&2; exit 2; }
 [[ -f "$backend_root/scripts/codex_backend/setup.sh" ]] || { echo "Backend scripts not found: $backend_root" >&2; exit 2; }
-[[ -x "$CODEX_BIN" && "$("$CODEX_BIN" --version)" == "codex-cli $cli_version" ]] || {
-    echo "Expected codex-cli $cli_version at $CODEX_BIN" >&2
-    exit 2
-}
+[[ -x "$CODEX_BIN" ]] || { echo "Missing Codex CLI: $CODEX_BIN" >&2; exit 2; }
+node -e 'console.log("Codex CLI " + require(process.argv[1]).checkCli())' "$backend_root/scripts/codex_backend/common.cjs"
 if [[ "${1:-}" == check ]]; then
     echo "Grace backend prerequisites OK; project=$project"
     exit 0
@@ -55,7 +52,7 @@ echo 'BACKEND_STARTUP installing connection components'
 component_dir="$(bash "$backend_root/scripts/codex_backend/setup.sh")"
 node_bin="$(cat "$component_dir/node-path")"
 sqlite_home="$("$node_bin" -e 'const C=require(process.argv[1]); console.log(C.privateDirectory(require("node:path").join(C.stateRoot(), "sqlite", C.hash(process.argv[2]) + "-agent")))' "$component_dir/common.cjs" "$project")"
-printf -v server_command '%q ' bash "$component_dir/server-window.sh" "$component_dir" "$project" "$socket" "$descriptor" "$tmux_name" "$runtime/exit-code" "$log_file" "$sqlite_home"
+printf -v server_command '%q ' bash "$component_dir/server-window.sh" "$component_dir" "$project" "$socket" "$descriptor" "$tmux_name" "$runtime/exit-code" "$log_file" "$sqlite_home" "$project/agent_tmux_server_${SLURM_JOB_ID}.out"
 tmux -L "$tmux_name" new-window -t agent -n backend -c "$project" "$server_command"
 tmux -L "$tmux_name" wait-for backend-exited
 [[ -f "$runtime/exit-code" ]] || { echo 'Backend exited without an exit receipt' >&2; exit 1; }

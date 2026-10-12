@@ -18,7 +18,7 @@ if [[ "${1:-}" != check ]]; then
 fi
 source "$project/scripts/codex_backend/runtime.sh"
 [[ -x "$CODEX_BIN" ]] || { echo "missing $CODEX_BIN" >&2; exit 2; }
-[[ "$("$CODEX_BIN" --version)" == 'codex-cli 0.160.1' ]] || { echo 'CLI version mismatch' >&2; exit 2; }
+"$node_bin" -e 'console.log("Codex CLI " + require(process.argv[1]).checkCli())' "$project/scripts/codex_backend/common.cjs"
 for dependency in tmux node npm flock zip; do
     command -v "$dependency" >/dev/null || { echo "missing $dependency" >&2; exit 2; }
 done

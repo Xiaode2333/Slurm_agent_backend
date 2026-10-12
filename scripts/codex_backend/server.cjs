@@ -22,7 +22,8 @@ function recoverBackfill(sqliteHome) {
 
 async function run(project, socket, descriptorFile, sqliteHome) {
   console.log('BACKEND_STARTUP checking CLI version (up to 120 seconds for cold shared storage)');
-  C.checkCli();
+  const version = C.checkCli();
+  console.log(`BACKEND_CLI version=${version}`);
   project = C.canonical(project);
   C.privateDirectory(path.dirname(socket));
   C.privateDirectory(path.dirname(descriptorFile));
@@ -31,7 +32,7 @@ async function run(project, socket, descriptorFile, sqliteHome) {
   console.log('BACKEND_STARTUP starting app-server');
   const descriptor = { schema: 'codex_backend_v1', id: `${os.hostname()}-${process.env.SLURM_JOB_ID}`,
     hostname: os.hostname(), jobId: process.env.SLURM_JOB_ID, project, socket,
-    cli: C.CLI, version: C.CLI_VERSION, sqliteHome, status: 'starting', startedAt: new Date().toISOString() };
+    cli: C.CLI, version, sqliteHome, status: 'starting', startedAt: new Date().toISOString() };
   const child = spawn(C.CLI, ['-c', 'features.code_mode_host=true', '-c', `sqlite_home=${JSON.stringify(sqliteHome)}`, 'app-server',
     '--listen', `unix://${socket}`, '--analytics-default-enabled'], { cwd: project, stdio: ['ignore', 'inherit', 'inherit'] });
   descriptor.pid = child.pid; descriptor.startTicks = C.processIdentity(child.pid);
@@ -48,12 +49,12 @@ async function run(project, socket, descriptorFile, sqliteHome) {
     const deadline = Date.now() + 900000;
     while (true) {
       if (exited) throw new Error('app-server exited before readiness');
-      try { const probe = await C.rpcClient(socket); probe.close(); break; }
+      try { const probe = await C.rpcClient(socket, { expectedVersion: version }); probe.close(); break; }
       catch (error) { if (Date.now() >= deadline) throw error; await delay(250); }
     }
     // Import shared rollout history into this project's private, durable index.
     // Never share SQLite WAL files with another node's default Codex process.
-    const index = await C.rpcClient(socket, { timeout: 120000 });
+    const index = await C.rpcClient(socket, { timeout: 120000, expectedVersion: version });
     try { await index.request('thread/list', { limit: 1, sourceKinds: ['cli', 'vscode', 'appServer'], useStateDbOnly: false }); }
     finally { index.close(); }
     descriptor.projectAliases = [project];

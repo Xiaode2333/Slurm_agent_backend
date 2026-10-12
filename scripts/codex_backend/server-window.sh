@@ -2,6 +2,8 @@
 set -uo pipefail
 component_dir="$1"; project="$2"; socket="$3"; descriptor="$4"
 tmux_name="$5"; result_file="$6"; log_file="$7"; sqlite_home="$8"
+logs=("$log_file")
+[[ -z "${9:-}" || "$9" == "$log_file" ]] || logs+=("$9")
 finish() {
     status=$?
     printf '%s\n' "$status" > "$result_file"
@@ -10,5 +12,5 @@ finish() {
 trap finish EXIT
 node_bin="$(cat "$component_dir/node-path")"
 # One allocation owns a project's persistent SQLite namespace at a time.
-flock -n "$sqlite_home/service.lock" "$node_bin" "$component_dir/sqlite-store.cjs" "$project" "$socket" "$descriptor" "$sqlite_home" > >(tee -a "$log_file") 2>&1
+flock -n "$sqlite_home/service.lock" "$node_bin" "$component_dir/sqlite-store.cjs" "$project" "$socket" "$descriptor" "$sqlite_home" > >(tee -a "${logs[@]}") 2>&1
 exit $?

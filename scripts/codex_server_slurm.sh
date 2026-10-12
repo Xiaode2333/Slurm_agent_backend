@@ -17,7 +17,7 @@ VSCODE_BIN="$HOME/.local/share/vscode-cli/1.140.0/code"
 if [[ "${1:-}" == check ]]; then
     source "$project/scripts/codex_backend/runtime.sh"
     [[ -x "$CODEX_BIN" ]] || { echo "missing $CODEX_BIN" >&2; exit 2; }
-    [[ "$("$CODEX_BIN" --version)" == 'codex-cli 0.160.1' ]] || { echo 'CLI version mismatch' >&2; exit 2; }
+    "$node_bin" -e 'console.log("Codex CLI " + require(process.argv[1]).checkCli())' "$project/scripts/codex_backend/common.cjs"
     command -v tmux node npm flock zip >/dev/null
     [[ "$(node --version)" == v22.* ]] || { echo 'Node 22 required' >&2; exit 2; }
     echo 'PASS codex backend: site-configured partition/account/QOS, 2 CPU, 32 GiB, seven days, zero GPU'

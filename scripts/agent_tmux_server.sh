@@ -37,7 +37,7 @@ echo 'BACKEND_STARTUP installing connection components'
 component_dir="$(bash "$project/scripts/codex_backend/setup.sh")"
 node_bin="$(cat "$component_dir/node-path")"
 sqlite_home="$("$node_bin" -e 'const C=require(process.argv[1]); console.log(C.privateDirectory(require("node:path").join(C.stateRoot(), "sqlite", C.hash(process.argv[2]) + "-agent")))' "$component_dir/common.cjs" "$project")"
-printf -v server_command '%q ' bash "$component_dir/server-window.sh" "$component_dir" "$project" "$socket" "$descriptor" "$tmux_name" "$runtime/exit-code" "$log_file" "$sqlite_home"
+printf -v server_command '%q ' bash "$component_dir/server-window.sh" "$component_dir" "$project" "$socket" "$descriptor" "$tmux_name" "$runtime/exit-code" "$log_file" "$sqlite_home" "$project/agent_tmux_server_${SLURM_JOB_ID}.out"
 tmux -L "$tmux_name" new-window -t agent -n backend -c "$project" "$server_command"
 tmux -L "$tmux_name" wait-for backend-exited
 [[ -f "$runtime/exit-code" ]] || { echo 'Backend exited without an exit receipt' >&2; exit 1; }

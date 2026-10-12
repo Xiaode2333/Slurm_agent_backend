@@ -127,7 +127,7 @@ async function connect(project, action = 'connect') {
   project = C.canonical(project);
   const selected = await require('./ssh-transport.cjs').resolveBackend({ project });
   if (action === 'refresh-history') {
-    const rpc = await C.rpcClient(selected.descriptor.socket, { timeout: 120000 });
+    const rpc = await C.rpcClient(selected.descriptor.socket, { timeout: 120000, expectedVersion: selected.descriptor.version });
     try { await rpc.request('thread/list', { limit: 1, cwd: project, useStateDbOnly: false }); }
     finally { rpc.close(); }
     const paths = await C.discoverProjectAliases(selected.descriptor.socket, project);
@@ -142,7 +142,7 @@ async function connect(project, action = 'connect') {
     let health;
     if (action === 'doctor') {
       const started = performance.now();
-      try { const client = await C.rpcClient(selected.descriptor.socket, { timeout: 5000 }); client.close(); health = { initializeMs: performance.now() - started }; }
+      try { const client = await C.rpcClient(selected.descriptor.socket, { timeout: 5000, expectedVersion: selected.descriptor.version }); client.close(); health = { initializeMs: performance.now() - started }; }
       catch (error) { health = { error: error.message }; }
     }
     console.log(JSON.stringify({ project, backendAvailable: true, backend: { jobId: selected.descriptor.jobId,

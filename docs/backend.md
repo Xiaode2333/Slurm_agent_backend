@@ -3,8 +3,13 @@
 The supported backend runs inside a seven-day CPU allocation independently of
 the official Codex sidebar, terminal UI and automatically started VS Code Tunnel.
 It uses the existing login, configuration and persistent rollout storage.
-The compatibility target is Codex CLI 0.160.1 and official extension
-26.930.61225. The CLI is always `$HOME/.npm-global/bin/codex`.
+The default CLI path is `$HOME/.npm-global/bin/codex` on Bouchet and
+`$HOME/.local/bin/codex` on Grace; cluster/path overrides remain supported.
+Startup detects the installed CLI version, then requires a matching live
+app-server initialize response and a successful history request. Descriptors
+retain the running version even after the installed CLI is updated. An optional
+`CODEX_BACKEND_CLI_VERSION` explicitly pins a version; by default no release
+number is pinned. Official extension compatibility remains 26.930.61225.
 
 ## Start the allocation
 
@@ -75,7 +80,9 @@ the batch job; keeping an empty tmux shell alive does not retain the allocation.
 `VSCODE_STOP` in the Tunnel log records the allocation's exit status, including
 backend startup failures that interrupt an outstanding device login. Backend
 startup stages appear in `codex_slurm.out`; the CLI version probe allows up to
-120 seconds for a cold launch and still requires the exact supported version.
+120 seconds for a cold launch and checks the detected version against the live
+server handshake. Agent server output also reaches the job-specific
+`agent_tmux_server_<job-id>.out`, including backend startup failures.
 For a standalone Tunnel, use [the Tunnel launcher](../scripts/vscode_slurm.sh).
 
 ## Connect the official sidebar
@@ -201,10 +208,13 @@ assistant turn running on the backend.
 
 Cancel the allocation explicitly to stop the service. There is no renewal or
 cross-node migration. Persistent history can be resumed after a new allocation;
-an interrupted process is not promised to resume continuously. Do not update
-the CLI during an allocation. An extension or CLI upgrade requires compatibility
-verification before connection; the development-only CLI override is not an
-official external-endpoint setting.
+an interrupted process is not promised to resume continuously. Prefer CLI
+updates between allocations. Existing allocations keep their recorded version;
+new allocations detect the updated CLI and verify its live protocol. Ordinary
+CLI updates need no script edits, but incompatible future protocol, configuration
+or SQLite changes can still fail with a diagnostic. Official extension upgrades
+remain a separate compatibility contract. The development-only CLI override is
+not an official external-endpoint setting.
 
 ## Fast history and diagnosis
 

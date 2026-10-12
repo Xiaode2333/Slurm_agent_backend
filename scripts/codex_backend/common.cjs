@@ -5,7 +5,15 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 
-const { cli: CLI, version: CLI_VERSION } = require('./cli-config.cjs').cliConfig();
+const { cli: CLI, version: requiredVersion } = require('./cli-config.cjs').cliConfig();
+let cliVersion;
+const versionPattern = '\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?';
+const isCliVersion = value => typeof value === 'string' && new RegExp(`^${versionPattern}$`).test(value);
+function handshakeVersion(userAgent) {
+  const version = typeof userAgent === 'string' && userAgent.match(new RegExp(`^[^/\\s]+/(${versionPattern})(?=\\s|$)`))?.[1];
+  if (!version) throw new Error('Backend handshake has no recognized Codex version');
+  return version;
+}
 const EXTENSION_VERSION = '26.930.61225';
 const stateRoot = () => path.join(os.homedir(), '.local/state/codex-backend');
 const hash = value => crypto.createHash('sha256').update(value).digest('hex').slice(0, 24);
@@ -40,15 +48,16 @@ function processIdentity(pid) {
 function checkCli() {
   // Loading the native CLI from cold shared storage can exceed ten seconds.
   const version = execFileSync(CLI, ['--version'], { encoding: 'utf8', timeout: 120000 }).trim();
-  if (version !== `codex-cli ${CLI_VERSION}`) {
-    throw new Error(`Unsupported CLI: ${version}; expected ${CLI_VERSION} at ${CLI}`);
-  }
-  return CLI_VERSION;
+  const detected = version.match(new RegExp(`^codex-cli (${versionPattern})$`))?.[1];
+  if (!detected) throw new Error(`Unsupported CLI version output: ${version} at ${CLI}`);
+  if (requiredVersion && detected !== requiredVersion) throw new Error(`CLI version mismatch: expected ${requiredVersion}, got ${detected}`);
+  cliVersion = detected;
+  return detected;
 }
 function validateDescriptor(descriptor, project, host = os.hostname(), { allowShared = false } = {}) {
   const transport = descriptor.transport;
   if (descriptor.schema !== 'codex_backend_v1' || descriptor.status !== 'ready' ||
-      (!transport && descriptor.hostname !== host) || descriptor.cli !== CLI || descriptor.version !== CLI_VERSION ||
+      (!transport && descriptor.hostname !== host) || descriptor.cli !== CLI || !isCliVersion(descriptor.version) ||
       (!allowShared && canonical(descriptor.project) !== canonical(project))) {
     throw new Error('Backend descriptor is stale, incompatible, or belongs to another node/project');
   }
@@ -112,7 +121,7 @@ function connectSocket(socket) {
     ws.once('error', reject);
   });
 }
-async function rpcClient(socket, { timeout = 20000 } = {}) {
+async function rpcClient(socket, { timeout = 20000, expectedVersion } = {}) {
   const ws = await connectSocket(socket);
   const pending = new Map();
   let nextId = 1;
@@ -140,13 +149,14 @@ async function rpcClient(socket, { timeout = 20000 } = {}) {
       clientInfo: { name: 'mdlammps_backend_probe', title: 'Backend connection probe', version: '0.1.0' },
       capabilities: { experimentalApi: true },
     });
-    if (!initialized.userAgent?.includes(`/${CLI_VERSION}`)) throw new Error('Backend handshake version mismatch');
+    const actualVersion = handshakeVersion(initialized.userAgent);
+    if (expectedVersion && actualVersion !== expectedVersion) throw new Error(`Backend handshake version mismatch: expected ${expectedVersion}, got ${actualVersion}`);
     ws.send(JSON.stringify({ method: 'initialized', params: {} }));
     return { request, close: () => ws.close(), initialized };
   } catch (error) { ws.terminate(); throw error; }
 }
 async function inspectBackend(descriptor, { project = descriptor.project, exhaustive = true } = {}) {
-  const client = await rpcClient(descriptor.socket);
+  const client = await rpcClient(descriptor.socket, { expectedVersion: descriptor.version });
   try {
     const threads = [];
     let cursor = null;
@@ -233,7 +243,7 @@ function connectionLauncher(component, descriptorFile, root = stateRoot(), proje
   fs.writeFileSync(file, `#!/usr/bin/env bash\nexport CODEX_BACKEND_DESCRIPTOR_FILE=${quote(descriptorFile)}\nexport CODEX_BACKEND_PROJECT=${quote(project)}\nexec ${quote(path.join(component, 'launcher.sh'))} "$@"\n`, { mode: 0o700 });
   return file;
 }
-module.exports = { CLI, CLI_VERSION, EXTENSION_VERSION, stateRoot, hash, canonical, privateDirectory,
+module.exports = { CLI, get CLI_VERSION() { return cliVersion || checkCli(); }, isCliVersion, handshakeVersion, EXTENSION_VERSION, stateRoot, hash, canonical, privateDirectory,
   writeJson, readJson, processIdentity, checkCli, validateDescriptor, selectBackend,
   connectSocket, rpcClient, inspectBackend, discoverProjectAliases, waitForFile, receiptPath, windowPath,
   dispatcherLauncher, connectionLauncher };
