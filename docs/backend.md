@@ -107,6 +107,18 @@ five-second wait for the helper's explicit per-host decision. A registered
 unbound window chooses the normal CLI immediately.
 **Codex Backend: Use Local Codex in This Window** unbinds only the current window;
 the shared dispatcher stays configured for other windows. Unbound windows use the normal CLI.
+The shared Codex/Claude VSIX packager uses each helper's declared API floor
+(`^1.95.0`) in both manifests, not the build host's `code --version`. Headless
+or newer-client builds therefore stay compatible with supported older servers;
+ordinary VS Code 1.x upgrades need no script edits. Archives are replaced
+atomically, with helper identity preserved during concurrent packaging.
+If the remote Codex installer rejects a stale package as incompatible, captured
+output identifies the actual server version and triggers one rebuild/retry.
+Targets outside the supported engine range require a client/connector update;
+network/permission errors and a second rejection fail without further retries.
+The connector never lowers its API floor or patches official-extension metadata
+to bypass compatibility checks. Official extensions have their own requirements.
+
 When upgrading an already active helper, run **Developer: Reload Window**
 once after installation and repeat the connection command. Old helpers cannot
 validate the new cross-node transport or apply a shared-project binding;

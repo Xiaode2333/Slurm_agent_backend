@@ -200,7 +200,8 @@ def test_codex_real_unix_websocket_regressions():
     if not node or not (ROOT / "scripts/codex_backend/node_modules/ws").is_dir():
         pytest.skip("Run npm ci --prefix scripts/codex_backend to enable Node regressions")
     result = subprocess.run(
-        [node, "--test", "test/backend.test.cjs", "test/helper.test.cjs", "test/ssh-transport.test.cjs"], cwd=ROOT / "scripts/codex_backend",
+        [node, "--test", "test/backend.test.cjs", "test/helper.test.cjs", "test/ssh-transport.test.cjs",
+         "test/installation.test.cjs", "test/vscode-compatibility.test.cjs"], cwd=ROOT / "scripts/codex_backend",
         capture_output=True, text=True, timeout=40,
     )
     assert result.returncode == 0, result.stdout + result.stderr

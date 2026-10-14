@@ -86,24 +86,7 @@ function send(socket, value) {
   });
 }
 function installVsix() {
-  const vsix = path.join(__dirname, 'codex-backend.vsix');
-  try {
-    const output = execFileSync('code', ['--install-extension', vsix, '--force'], {
-      encoding: 'utf8', stdio: ['inherit', 'pipe', 'pipe'], timeout: 120000,
-    });
-    process.stdout.write(output);
-    return;
-  } catch (error) {
-    const output = `${error.stdout || ''}${error.stderr || ''}`;
-    process.stderr.write(output);
-    if (!/compatible with VS Code/i.test(output)) throw error;
-    // The installed component may predate dynamic engine ranges (the
-    // component hash only changes when source changes), so repackage the
-    // vsix against the client's own version and retry once.
-    console.error('Connector package is not compatible with the local VS Code version; repackaging with a matching engine range.');
-    execFileSync(process.execPath, [path.join(__dirname, 'package-helper.cjs'), __dirname], { stdio: 'inherit', timeout: 60000 });
-    execFileSync('code', ['--install-extension', vsix, '--force'], { stdio: 'inherit', timeout: 120000 });
-  }
+  require('./package-helper.cjs').installHelper(__dirname);
 }
 async function refreshHelpers(project, root = C.stateRoot()) {
   const dir = path.join(root, 'helpers');
