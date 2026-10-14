@@ -286,6 +286,30 @@ The workaround does not repair cloud-request failures and may be replaced by
 extension reinstallation/update; re-inspect a new build rather than patching it
 blindly. Remove the workaround when an upstream fix is verified locally.
 
+## Model-capacity recovery
+
+A root conversation whose turn ends with `Selected model is at capacity`
+(`codex_error_info: server_overloaded`) stops until someone continues it.
+A supervising agent (for example a Claude Code session on the same allocation)
+can watch for that event and continue the same thread with its own model:
+
+```bash
+node scripts/codex_backend/capacity.cjs watch --timeout 7200 [--since ISO]
+node scripts/codex_backend/capacity.cjs resume THREAD_ID [--delay SECONDS]
+```
+
+`watch` follows rollout files under `$CODEX_HOME/sessions` from their current
+end (or a bounded tail after `--since`) and exits with one line:
+`status=EVENT thread=... turn=...` (0), `status=TIMEOUT` (3) or
+`status=FATAL` (4). Subagent failures are ignored; the parent receives them and
+decides. `resume` runs on the backend node. It acts only when the thread's last
+turn is still that capacity failure and the thread is not active; a later turn
+or a user interruption (`turn_aborted`) yields `status=SKIP`. It then calls
+`thread/resume` and `turn/start` with a short continuation message and no
+model, effort or configuration override, so the thread keeps its recorded
+model. Retry pacing (for example increasing `--delay` after repeated
+failures) belongs to the supervisor.
+
 ## Verification
 
 ```bash
