@@ -14,7 +14,7 @@ const fakeCode = `#!/usr/bin/env node
 if(process.argv.includes('--version')){console.log('2.9.321 (Claude Code)');process.exit(0);}
 if(process.argv.includes('--exit-seven'))process.exit(7);
 if(process.argv.includes('status')){console.log(JSON.stringify({args:process.argv.slice(2),job:process.env.SLURM_JOB_ID,entry:process.env.CLAUDE_CODE_ENTRYPOINT}));process.exit(0);}
-let b='';process.stdin.on('data',c=>{b+=c;let i;while((i=b.indexOf('\\n'))>=0){let s=b.slice(0,i);b=b.slice(i+1);let r=JSON.parse(s);if(r.type==='control_request')console.log(JSON.stringify({type:'control_response',response:{subtype:'success',request_id:r.request_id,response:{}}}));if(r.type==='user'){console.log(JSON.stringify({type:'system',subtype:'init',session_id:r.session_id||'native-id',version:'2.9.321'}));setTimeout(()=>console.log(JSON.stringify({type:'result',session_id:r.session_id||'native-id',result:'done'})),300);}}});
+let b='';process.stdin.on('data',c=>{b+=c;let i;while((i=b.indexOf('\\n'))>=0){let s=b.slice(0,i);b=b.slice(i+1);let r=JSON.parse(s);if(r.type==='control_request')console.log(JSON.stringify({type:'control_response',response:{subtype:'success',request_id:r.request_id,response:{}}}));if(r.type==='user'){const id=r.session_id||'native-id';console.log(JSON.stringify({type:'system',subtype:'init',session_id:id,version:'2.9.321'}));if(r.message&&r.message.content==='background'){console.log(JSON.stringify({type:'system',subtype:'task_started',task_id:'bg1',is_backgrounded:true,session_id:id}));setTimeout(()=>console.log(JSON.stringify({type:'system',subtype:'task_notification',task_id:'bg1',status:'completed',session_id:id})),1200);}setTimeout(()=>console.log(JSON.stringify({type:'result',session_id:id,result:'done'})),300);}}});
 `;
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-test-'));
@@ -22,10 +22,10 @@ function fixture(t) {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return { dir, cli };
 }
-async function service(t) {
+async function service(t, extraEnv = {}) {
   const { dir, cli } = fixture(t), socket = path.join(dir, 'app.sock'), file = path.join(dir, 'descriptor.json');
   const child = cp.spawn(process.execPath, [path.join(__dirname, '../server.cjs'), dir, socket, file], {
-    env: { ...process.env, HOME: dir, SLURM_JOB_ID: '99111', CLAUDE_BACKEND_CLI: cli }, stdio: ['ignore', 'pipe', 'pipe'] });
+    env: { ...process.env, HOME: dir, SLURM_JOB_ID: '99111', CLAUDE_BACKEND_CLI: cli, ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '', stderr = ''; child.stderr.on('data', c => { stderr += c; });
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`No ready receipt ${stderr}`)), 10000);
@@ -97,26 +97,84 @@ test('native initialize JSONL passes unchanged; status does not launch a Claude 
   assert.deepEqual(JSON.parse(out), { type: 'control_response', response: { subtype: 'success', request_id: 'real-id', response: {} } });
   client.send({ op: 'eof' }); assert.equal((await client.wait('exit')).code, 0);
 });
-test('client loss preserves submitted turn, journals its result, then permits native resume', async t => {
+const input = value => ({ op: 'input', data: Buffer.from(JSON.stringify(value) + '\n').toString('base64') });
+const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+async function waitExited(journalDir, ms = 5000) {
+  const receipt = path.join(journalDir, 'session.json');
+  await new Promise((resolve, reject) => {
+    const check = () => { try { if (C.readJson(receipt).status === 'exited') { clearTimeout(timer); watcher.close(); resolve(); } } catch { /* Atomic rename transient. */ } };
+    const timer = setTimeout(() => { watcher.close(); reject(new Error('session did not exit')); }, ms);
+    const watcher = fs.watch(journalDir, check); check();
+  });
+}
+test('client loss keeps the native process; a resumed window reattaches to it', async t => {
   const s = await service(t), client = connect(s.socket); await once(client.conn, 'connect');
   client.send({ op: 'spawn', project: s.dir, args: [s.cli], env: {}, hostname: os.hostname() });
   const started = await client.wait('started');
-  client.send({ op: 'input', data: Buffer.from('{"type":"user","session_id":"native-id","message":{"role":"user","content":"work"}}\n').toString('base64') });
+  client.send(input({ type: 'user', session_id: 'native-id', message: { role: 'user', content: 'work' } }));
   await client.wait('stdout'); client.conn.destroy();
-  const observer = connect(s.socket); t.after(() => observer.conn.destroy()); await once(observer.conn, 'connect');
-  observer.send({ op: 'spawn', project: s.dir, args: [s.cli, '--resume=native-id'], env: {}, hostname: os.hostname() });
-  assert.match((await observer.wait('error')).error, /still active/);
-  // Watch append-only journal completion rather than treating a disconnected client as completion.
-  const receipt = path.join(started.journalDir, 'session.json');
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { watcher.close(); reject(new Error('orphan did not finish')); }, 5000);
-    const watcher = fs.watch(started.journalDir, () => {
-      try { if (C.readJson(receipt).status === 'exited') { clearTimeout(timer); watcher.close(); resolve(); } } catch { /* Atomic rename transient. */ }
-    });
-  });
-  assert.match(fs.readFileSync(path.join(started.journalDir, 'stdout.log'), 'utf8'), /"result":"done"/);
   const resumed = connect(s.socket); t.after(() => resumed.conn.destroy()); await once(resumed.conn, 'connect');
-  resumed.send({ op: 'spawn', project: s.dir, args: [s.cli, '--resume', 'native-id'], env: {}, hostname: os.hostname() }); await resumed.wait('started'); resumed.send({ op: 'eof' }); assert.equal((await resumed.wait('exit')).code, 0);
+  resumed.send({ op: 'spawn', project: s.dir, args: [s.cli, '--resume=native-id'], env: {}, hostname: os.hostname() });
+  const again = await resumed.wait('started');
+  assert.equal(again.reattached, true); assert.equal(again.pid, started.pid);
+  resumed.send(input({ type: 'control_request', request_id: 'second-init', request: { subtype: 'initialize' } }));
+  const deadline = Date.now() + 5000;
+  while (!resumed.frames.some(f => f.op === 'stdout' && Buffer.from(f.data, 'base64').toString().includes('second-init'))) {
+    if (Date.now() > deadline) throw new Error('No reattached control response'); await new Promise(r => setTimeout(r, 50));
+  }
+  // A second live window may not steal an attached session.
+  const competing = connect(s.socket); t.after(() => competing.conn.destroy()); await once(competing.conn, 'connect');
+  competing.send({ op: 'spawn', project: s.dir, args: [s.cli, '--resume', 'native-id'], env: {}, hostname: os.hostname() });
+  assert.match((await competing.wait('error')).error, /attached to another window/);
+  resumed.send({ op: 'eof' }); assert.equal((await resumed.wait('exit')).code, 0);
+  assert.match(fs.readFileSync(path.join(started.journalDir, 'stdout.log'), 'utf8'), /"result":"done"/);
+});
+test('window reload TERM/HUP detaches instead of killing native work', async t => {
+  const s = await service(t), client = connect(s.socket); t.after(() => client.conn.destroy()); await once(client.conn, 'connect');
+  client.send({ op: 'spawn', project: s.dir, args: [s.cli], env: {}, hostname: os.hostname() });
+  const started = await client.wait('started');
+  client.send({ op: 'signal', signal: 'SIGTERM' }); client.send({ op: 'detach' });
+  await new Promise(r => setTimeout(r, 300));
+  assert.ok(alive(started.pid));
+  assert.equal(C.readJson(path.join(started.journalDir, 'session.json')).status, 'detached');
+  const observer = connect(s.socket); t.after(() => observer.conn.destroy()); await once(observer.conn, 'connect');
+  observer.send({ op: 'probe' }); assert.equal((await observer.wait('ready')).sessions[0].status, 'detached');
+});
+test('an idle detached session ends after the grace period, then a fresh resume starts', async t => {
+  const s = await service(t, { CLAUDE_BACKEND_DETACH_GRACE_SECONDS: '0.3' }), client = connect(s.socket); await once(client.conn, 'connect');
+  client.send({ op: 'spawn', project: s.dir, args: [s.cli], env: {}, hostname: os.hostname() });
+  const started = await client.wait('started');
+  client.send(input({ type: 'user', session_id: 'native-id', message: { role: 'user', content: 'work' } }));
+  await client.wait('stdout'); client.conn.destroy();
+  await waitExited(started.journalDir);
+  const resumed = connect(s.socket); t.after(() => resumed.conn.destroy()); await once(resumed.conn, 'connect');
+  resumed.send({ op: 'spawn', project: s.dir, args: [s.cli, '--resume', 'native-id'], env: {}, hostname: os.hostname() });
+  const fresh = await resumed.wait('started'); assert.notEqual(fresh.pid, started.pid); assert.equal(fresh.reattached, undefined);
+  resumed.send({ op: 'eof' }); assert.equal((await resumed.wait('exit')).code, 0);
+});
+test('a detached background task keeps the session alive past the grace period', async t => {
+  const s = await service(t, { CLAUDE_BACKEND_DETACH_GRACE_SECONDS: '0.2' }), client = connect(s.socket); await once(client.conn, 'connect');
+  client.send({ op: 'spawn', project: s.dir, args: [s.cli], env: {}, hostname: os.hostname() });
+  const started = await client.wait('started');
+  client.send(input({ type: 'user', session_id: 'native-id', message: { role: 'user', content: 'background' } }));
+  await client.wait('stdout'); client.conn.destroy();
+  await new Promise(r => setTimeout(r, 900));
+  assert.ok(alive(started.pid), 'background task must hold the detached session');
+  await waitExited(started.journalDir);
+});
+test('SIGTERM to the real wrapper process detaches and leaves native work running', async t => {
+  const s = await service(t);
+  const wrapper = cp.spawn(process.execPath, [path.join(__dirname, '../wrapper.cjs'), s.file, s.cli], { env: { ...process.env, HOME: s.dir }, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(() => { if (wrapper.exitCode === null) wrapper.kill('SIGKILL'); });
+  let out = ''; wrapper.stdout.on('data', c => { out += c; });
+  wrapper.stdin.write(JSON.stringify({ type: 'user', session_id: 'native-id', message: { role: 'user', content: 'work' } }) + '\n');
+  const deadline = Date.now() + 5000;
+  while (!out.includes('"init"')) { if (Date.now() > deadline) throw new Error('wrapper produced no output'); await new Promise(r => setTimeout(r, 50)); }
+  wrapper.kill('SIGTERM'); const [code] = await once(wrapper, 'exit'); assert.equal(code, 143);
+  await new Promise(r => setTimeout(r, 300));
+  const observer = connect(s.socket); t.after(() => observer.conn.destroy()); await once(observer.conn, 'connect');
+  observer.send({ op: 'probe' }); const [session] = (await observer.wait('ready')).sessions;
+  assert.equal(session.status, 'detached'); assert.ok(alive(session.pid));
 });
 test('native failure code is propagated and the supervisor stays available', async t => {
   const s = await service(t), client = connect(s.socket); t.after(() => client.conn.destroy()); await once(client.conn, 'connect');

@@ -45,6 +45,83 @@ async function serve(project, socket, file) {
     cli, version, hostname: os.hostname(), jobId: process.env.SLURM_JOB_ID,
     pid: process.pid, startTicks: C.processIdentity(process.pid), status: 'starting' };
   C.writeJson(file, descriptor);
+  const idleGrace = Number(process.env.CLAUDE_BACKEND_DETACH_GRACE_SECONDS ?? 1800) * 1000;
+  const record = session => C.writeJson(path.join(session.receipt.journalDir, 'session.json'), session.receipt);
+  // A detached native process keeps stdin open so a later window can reattach.
+  // Only an idle detached process (no submitted turn, no background task) is
+  // closed, after a grace period; native stdin EOF then ends it normally.
+  const reviewIdle = session => {
+    clearTimeout(session.idleTimer); session.idleTimer = null;
+    if (session.attached || session.stdinEnded || session.pending || session.tasks.size) return;
+    session.idleTimer = setTimeout(() => {
+      if (!session.attached && !session.pending && !session.tasks.size) { session.stdinEnded = true; session.child.stdin.end(); }
+    }, idleGrace);
+    session.idleTimer.unref();
+  };
+  const detach = (session, connection) => {
+    if (!session || session.attached !== connection || session.receipt.status === 'exited') return;
+    session.attached = null; session.send = null; session.receipt.status = 'detached'; session.receipt.detachedAt = new Date().toISOString();
+    session.child.stdout.resume(); session.child.stderr.resume();
+    record(session); reviewIdle(session);
+  };
+  const attach = (session, connection, send) => {
+    clearTimeout(session.idleTimer); session.idleTimer = null;
+    session.attached = connection; session.send = send;
+    session.receipt.status = 'running'; session.receipt.reattachedAt = new Date().toISOString(); session.receipt.attachCount = (session.receipt.attachCount || 0) + 1;
+    record(session);
+  };
+  const launch = (spec, request, connection, send) => {
+    const id = crypto.randomUUID();
+    const journalDir = C.privateDirectory(path.join(C.root(), 'sessions', `${descriptor.hostname}-${descriptor.jobId}`, id));
+    const journals = Object.fromEntries(['stdout', 'stderr'].map(name => [name, fs.createWriteStream(path.join(journalDir, name + '.log'), { flags: 'ax', mode: 0o600 })]));
+    const child = spawn(spec.cli, spec.args, { cwd: spec.project, env: launchEnvironment(request.env, request.hostname === os.hostname()), stdio: ['pipe', 'pipe', 'pipe'] });
+    const receipt = { id, pid: child.pid, project: spec.project, cli: spec.cli, version: spec.version, nativeId: spec.nativeId, status: 'starting', journalDir };
+    const session = { child, receipt, nativeId: spec.nativeId, pending: 0, tasks: new Set(), inputBuffer: '', outputBuffer: '', attached: connection, send, stdinEnded: false, idleTimer: null };
+    session.closed = new Promise(resolve => child.once('close', resolve));
+    sessions.set(id, session);
+    const inspectLines = (kind, chunk) => {
+      const prop = kind === 'input' ? 'inputBuffer' : 'outputBuffer';
+      session[prop] += chunk.toString('utf8');
+      let i;
+      while ((i = session[prop].indexOf('\n')) >= 0) {
+        const line = session[prop].slice(0, i); session[prop] = session[prop].slice(i + 1);
+        try {
+          const value = JSON.parse(line);
+          if (kind === 'input' && value.type === 'user') session.pending++;
+          if (kind === 'output') {
+            if (value.session_id) { session.nativeId = value.session_id; receipt.nativeId = value.session_id; }
+            if (value.type === 'result') session.pending = Math.max(0, session.pending - 1);
+            if (value.type === 'system' && value.subtype === 'task_started' && value.is_backgrounded !== false) session.tasks.add(value.task_id);
+            if (value.type === 'system' && value.subtype === 'task_notification') session.tasks.delete(value.task_id);
+            if (value.type === 'result' || (value.type === 'system' && /^task_/.test(value.subtype || ''))) { if (!session.attached) reviewIdle(session); }
+          }
+        } catch { /* Native bytes still pass through unchanged. */ }
+      }
+      if (session[prop].length > 2 * 1024 * 1024) session[prop] = ''; // Inspection is bounded; transport is unchanged.
+    };
+    session.inspectInput = chunk => inspectLines('input', chunk);
+    child.once('spawn', () => { receipt.status = 'running'; receipt.startTicks = C.processIdentity(child.pid); record(session); session.send?.({ op: 'started', ...receipt }); });
+    child.once('error', error => { session.send?.({ op: 'error', error: error.message }); });
+    child.stdin.on('error', () => {});
+    for (const name of ['stdout', 'stderr']) {
+      journals[name].on('error', error => { console.error(`Claude journal: ${error.message}`); child.kill('SIGTERM'); });
+      child[name].on('data', chunk => {
+        if (!journals[name].write(chunk)) { child[name].pause(); journals[name].once('drain', () => child[name].resume()); }
+        if (name === 'stdout') inspectLines('output', chunk);
+        const target = session.attached;
+        if (target && !session.send({ op: name, data: chunk.toString('base64') })) {
+          child[name].pause(); target.once('drain', () => { if (session.attached === target) child[name].resume(); });
+        }
+      });
+    }
+    child.once('close', (code, signal) => {
+      clearTimeout(session.idleTimer);
+      receipt.status = 'exited'; receipt.code = code; receipt.signal = signal; record(session);
+      for (const journal of Object.values(journals)) journal.end();
+      session.send?.({ op: 'exit', code, signal }); session.attached?.end(); sessions.delete(id);
+    });
+    return session;
+  };
   const server = net.createServer(connection => {
     connections.add(connection);
     let session, launched = false;
@@ -54,80 +131,46 @@ async function serve(project, socket, file) {
         if (!launched && request.op === 'spawn') {
           launched = true;
           const spec = launchSpec(request, cli);
-          const nativeId = nativeSessionId(spec.args);
-          if (nativeId && [...sessions.values()].some(s => s.nativeId === nativeId && s.receipt.status !== 'exited')) throw new Error('This Claude session is still active in the allocation; wait for its turn to finish before resuming');
-          const id = crypto.randomUUID();
-          const journalDir = C.privateDirectory(path.join(C.root(), 'sessions', `${descriptor.hostname}-${descriptor.jobId}`, id));
-          const journals = Object.fromEntries(['stdout', 'stderr'].map(name => [name, fs.createWriteStream(path.join(journalDir, name + '.log'), { flags: 'ax', mode: 0o600 })]));
-          const child = spawn(spec.cli, spec.args, { cwd: spec.project, env: launchEnvironment(request.env, request.hostname === os.hostname()), stdio: ['pipe', 'pipe', 'pipe'] });
-          const receipt = { id, pid: child.pid, project: spec.project, cli: spec.cli, version: spec.version, nativeId, status: 'starting', journalDir };
-          session = { child, receipt, nativeId, pending: 0, inputBuffer: '', outputBuffer: '', orphaned: false };
-          sessions.set(id, session);
-          const record = () => C.writeJson(path.join(journalDir, 'session.json'), receipt);
-          const inspectLines = (kind, chunk) => {
-            const prop = kind === 'input' ? 'inputBuffer' : 'outputBuffer';
-            session[prop] += chunk.toString('utf8');
-            let i;
-            while ((i = session[prop].indexOf('\n')) >= 0) {
-              const line = session[prop].slice(0, i); session[prop] = session[prop].slice(i + 1);
-              try {
-                const value = JSON.parse(line);
-                if (kind === 'input' && value.type === 'user') session.pending++;
-                if (kind === 'output' && value.session_id) { session.nativeId = value.session_id; receipt.nativeId = value.session_id; }
-                if (kind === 'output' && value.type === 'result') { session.pending = Math.max(0, session.pending - 1); if (session.orphaned && !session.pending) child.stdin.end(); }
-              } catch { /* Native bytes still pass through unchanged. */ }
-            }
-            if (session[prop].length > 2 * 1024 * 1024) session[prop] = ''; // Inspection is bounded; transport is unchanged.
-          };
-          session.inspectInput = chunk => inspectLines('input', chunk);
-          child.once('spawn', () => { receipt.status = 'running'; receipt.startTicks = C.processIdentity(child.pid); record(); send({ op: 'started', ...receipt }); });
-          child.once('error', error => { send({ op: 'error', error: error.message }); });
-          child.stdin.on('error', () => {});
-          for (const name of ['stdout', 'stderr']) {
-            journals[name].on('error', error => { console.error(`Claude journal: ${error.message}`); child.kill('SIGTERM'); });
-            child[name].on('data', chunk => {
-              if (!journals[name].write(chunk)) { child[name].pause(); journals[name].once('drain', () => child[name].resume()); }
-              if (name === 'stdout') inspectLines('output', chunk);
-              if (!session.orphaned && !send({ op: name, data: chunk.toString('base64') })) {
-                child[name].pause(); connection.once('drain', () => { if (!session.orphaned) child[name].resume(); });
-              }
-            });
+          spec.nativeId = nativeSessionId(spec.args);
+          const existing = spec.nativeId && [...sessions.values()].find(s => s.nativeId === spec.nativeId && s.receipt.status !== 'exited');
+          if (existing?.attached) throw new Error('This Claude session is attached to another window; close it there before resuming here');
+          if (existing && !existing.stdinEnded) {
+            // Reattach the reloaded window to the still-running native process.
+            // A repeated SDK initialize is answered natively by the same process.
+            session = existing; attach(existing, connection, send);
+            send({ op: 'started', ...existing.receipt, reattached: true });
+            return;
           }
-          child.once('close', (code, signal) => {
-            receipt.status = 'exited'; receipt.code = code; receipt.signal = signal; record();
-            for (const journal of Object.values(journals)) journal.end();
-            send({ op: 'exit', code, signal }); connection.end(); sessions.delete(id);
-          });
+          if (existing) {
+            // The old process is finishing after stdin EOF; resume once it exits.
+            existing.closed.then(() => { if (!connection.destroyed) session = launch(spec, request, connection, send); });
+            return;
+          }
+          session = launch(spec, request, connection, send);
           return;
         }
         if (!session) throw new Error('Expected spawn');
         if (request.op === 'input') {
           const chunk = Buffer.from(request.data, 'base64'); session.inspectInput(chunk);
           if (!session.child.stdin.write(chunk)) { connection.pause(); session.child.stdin.once('drain', () => connection.resume()); }
-        } else if (request.op === 'eof') session.child.stdin.end();
-        else if (request.op === 'signal' && ['SIGINT', 'SIGTERM', 'SIGHUP'].includes(request.signal)) session.child.kill(request.signal);
+        } else if (request.op === 'eof') { session.stdinEnded = true; session.child.stdin.end(); }
+        else if (request.op === 'detach') detach(session, connection);
+        else if (request.op === 'signal' && request.signal === 'SIGINT') session.child.kill('SIGINT');
+        // Window reload/close terminates the client with TERM/HUP; that is a
+        // detach, never a reason to stop native work in the allocation.
+        else if (request.op === 'signal' && ['SIGTERM', 'SIGHUP'].includes(request.signal)) detach(session, connection);
         else throw new Error('Unsupported backend operation');
       } catch (error) { send({ op: 'error', error: error.message }); connection.end(); }
     });
     connection.on('error', () => {});
-    connection.on('close', () => {
-      connections.delete(connection);
-      if (session && session.receipt.status !== 'exited') {
-        session.orphaned = true; session.receipt.status = 'detached';
-        // A lost UI leaves a submitted turn running. Native stdin closes after
-        // its result; history can then be resumed by the extension normally.
-        if (!session.pending) session.child.stdin.end();
-        session.child.stdout.resume(); session.child.stderr.resume();
-        C.writeJson(path.join(session.receipt.journalDir, 'session.json'), session.receipt);
-      }
-    });
+    connection.on('close', () => { connections.delete(connection); detach(session, connection); });
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socket, resolve); });
   fs.chmodSync(socket, 0o600); descriptor.status = 'ready'; C.writeJson(file, descriptor);
   console.log(`CLAUDE_BACKEND_READY job=${descriptor.jobId} node=${descriptor.hostname} pid=${descriptor.pid} version=${version}`);
   const stop = () => {
     descriptor.status = 'stopped'; C.writeJson(file, descriptor);
-    for (const session of sessions.values()) session.child.kill('SIGTERM');
+    for (const session of sessions.values()) { clearTimeout(session.idleTimer); session.child.kill('SIGTERM'); }
     for (const connection of connections) connection.destroy();
     server.close();
     const deadline = setTimeout(() => { for (const session of sessions.values()) session.child.kill('SIGKILL'); }, 5000); deadline.unref();
