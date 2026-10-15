@@ -132,8 +132,8 @@ fixed cap). A submitted turn and its background tasks continue, and output is
 journaled. Reopening the same conversation reattaches the new window to that
 process (its repeated SDK `initialize` is answered natively), so later turns
 run in the same process; the new window's launch arguments are not reapplied.
-Turn interruption uses the native control request and still works; only SIGINT
-is forwarded as a signal. One-shot (non-streaming) launches still receive EOF.
+Turn interruption uses the native control request and still works; client
+signals (INT/TERM/HUP) only detach. One-shot (non-streaming) launches still receive EOF.
 Detached sessions are not closed while the allocation runs. Each keeps its
 memory, so close unneeded ones from a reattached window, or opt in to closing
 idle ones (no submitted turn, no running background task) with

@@ -168,10 +168,9 @@ async function serve(project, socket, file) {
           else { session.stdinEnded = true; session.child.stdin.end(); }
         }
         else if (request.op === 'detach') detach(session, connection);
-        else if (request.op === 'signal' && request.signal === 'SIGINT') session.child.kill('SIGINT');
-        // Window reload/close terminates the client with TERM/HUP; that is a
-        // detach, never a reason to stop native work in the allocation.
-        else if (request.op === 'signal' && ['SIGTERM', 'SIGHUP'].includes(request.signal)) detach(session, connection);
+        // Client signals (reload/close/terminal) only detach: native work runs
+        // until the allocation ends. Turn interruption is a native control request.
+        else if (request.op === 'signal' && ['SIGINT', 'SIGTERM', 'SIGHUP'].includes(request.signal)) detach(session, connection);
         else throw new Error('Unsupported backend operation');
       } catch (error) { send({ op: 'error', error: error.message }); connection.end(); }
     });

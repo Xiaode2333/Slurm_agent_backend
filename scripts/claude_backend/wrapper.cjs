@@ -10,10 +10,10 @@ async function run(file, args, project = process.cwd(), windowPid) {
     return connection.input.write(JSON.stringify(value) + '\n');
   };
   const signals = new Map();
-  // Reload/close of the VS Code window terminates this wrapper. Detach so the
+  // Any signal to this wrapper (window reload/close, Ctrl-C) detaches so the
   // native session keeps running in the allocation and can be reattached.
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    const handler = signal === 'SIGINT' ? () => { send({ op: 'signal', signal }); } : () => {
+    const handler = () => {
       exited = true; send({ op: 'detach' }); cleanup(); connection.close();
       process.exit(128 + os.constants.signals[signal]);
     };

@@ -154,11 +154,11 @@ test('client loss keeps the native process; a resumed window reattaches to it', 
   resumed.send({ op: 'eof' }); assert.equal((await resumed.wait('exit')).code, 0);
   assert.match(fs.readFileSync(path.join(started.journalDir, 'stdout.log'), 'utf8'), /"result":"done"/);
 });
-test('window reload TERM/HUP detaches instead of killing native work', async t => {
+test('client INT/TERM/HUP signals detach instead of killing native work', async t => {
   const s = await service(t), client = connect(s.socket); t.after(() => client.conn.destroy()); await once(client.conn, 'connect');
   client.send({ op: 'spawn', project: s.dir, args: [s.cli], env: {}, hostname: os.hostname() });
   const started = await client.wait('started');
-  client.send({ op: 'signal', signal: 'SIGTERM' }); client.send({ op: 'detach' });
+  client.send({ op: 'signal', signal: 'SIGINT' }); client.send({ op: 'signal', signal: 'SIGTERM' }); client.send({ op: 'detach' });
   await new Promise(r => setTimeout(r, 300));
   assert.ok(alive(started.pid));
   assert.equal(C.readJson(path.join(started.journalDir, 'session.json')).status, 'detached');
