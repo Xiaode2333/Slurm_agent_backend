@@ -122,21 +122,26 @@ variables. A localhost service configured in project MCP settings likewise
 needs a reachable endpoint or a separately configured SSH forward.
 
 Window reload, window close, Tunnel loss or a powered-off client never stops
-native work. VS Code terminates the wrapper with SIGTERM/SIGHUP; the wrapper
-and supervisor treat that, like any connection loss, as a detach. The native
-process keeps running with stdin open: a submitted turn and its background
-tasks continue, and output is journaled. Reopening the same conversation
-reattaches the new window to that process (its repeated SDK `initialize` is
-answered natively), so later turns run in the same process; the new window's
-launch arguments are not reapplied. Turn interruption uses the native
-control request and still works; only SIGINT is forwarded as a signal.
-A detached process with no submitted turn and no running background task is
-closed after `CLAUDE_BACKEND_DETACH_GRACE_SECONDS` (default 1800); a later
-resume starts a fresh process from saved history. If a resume arrives while
-that process is finishing, it waits for its exit. A second window cannot attach
-to a session that is still attached elsewhere. A lost connection waiting for a
-permission/tool response remains pending until a window reattaches and
-answers it; no approvals are invented.
+native work: an interactive session lives until the Slurm allocation ends.
+VS Code terminates the wrapper with SIGTERM/SIGHUP, and a vanished client
+closes the wrapper's stdin before its connection drops. For interactive
+(`--input-format stream-json`) sessions the wrapper and supervisor treat both,
+like any connection loss, as a detach: native stdin stays open, so the CLI
+never enters its print-mode wind-down (which kills background shells after a
+fixed cap). A submitted turn and its background tasks continue, and output is
+journaled. Reopening the same conversation reattaches the new window to that
+process (its repeated SDK `initialize` is answered natively), so later turns
+run in the same process; the new window's launch arguments are not reapplied.
+Turn interruption uses the native control request and still works; only SIGINT
+is forwarded as a signal. One-shot (non-streaming) launches still receive EOF.
+Detached sessions are not closed while the allocation runs. Each keeps its
+memory, so close unneeded ones from a reattached window, or opt in to closing
+idle ones (no submitted turn, no running background task) with
+`CLAUDE_BACKEND_DETACH_GRACE_SECONDS` in the backend environment. If a resume
+arrives while a process is finishing, it waits for its exit. A second window
+cannot attach to a session that is still attached elsewhere. A lost connection
+waiting for a permission/tool response remains pending until a window
+reattaches and answers it; no approvals are invented.
 Allocation expiry still ends its processes; saved native history remains.
 Private append-only stdout/stderr journals and version/exit receipts are retained
 under `~/.local/state/claude-backend/sessions/` for diagnosis.

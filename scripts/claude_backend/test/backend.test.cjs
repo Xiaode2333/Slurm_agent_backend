@@ -95,7 +95,32 @@ test('native initialize JSONL passes unchanged; status does not launch a Claude 
   client.send({ op: 'input', data: Buffer.from('{"type":"control_request","request_id":"real-id","request":{"subtype":"initialize"}}\n').toString('base64') });
   const out = Buffer.from((await client.wait('stdout')).data, 'base64').toString();
   assert.deepEqual(JSON.parse(out), { type: 'control_response', response: { subtype: 'success', request_id: 'real-id', response: {} } });
-  client.send({ op: 'eof' }); assert.equal((await client.wait('exit')).code, 0);
+  // Interactive stream-json: client EOF is a detach, never native shutdown.
+  client.send({ op: 'eof' }); await new Promise(r => setTimeout(r, 300));
+  assert.ok(alive(started.pid)); assert.equal(C.readJson(path.join(started.journalDir, 'session.json')).status, 'detached');
+});
+test('one-shot (non-streaming) EOF still ends the native process', async t => {
+  const s = await service(t), client = connect(s.socket); t.after(() => client.conn.destroy()); await once(client.conn, 'connect');
+  client.send({ op: 'spawn', project: s.dir, args: [s.cli, '--print'], env: {}, hostname: os.hostname() });
+  await client.wait('started'); client.send({ op: 'eof' }); assert.equal((await client.wait('exit')).code, 0);
+});
+test('computer off: wrapper stdin closes then the wrapper dies; busy or idle streaming sessions survive', async t => {
+  const s = await service(t);
+  for (const content of ['work', null]) {
+    const wrapper = cp.spawn(process.execPath, [path.join(__dirname, '../wrapper.cjs'), s.file, s.cli, '--input-format', 'stream-json', '--output-format', 'stream-json'], { env: { ...process.env, HOME: s.dir }, stdio: ['pipe', 'pipe', 'pipe'] });
+    t.after(() => { if (wrapper.exitCode === null) wrapper.kill('SIGKILL'); });
+    let out = ''; wrapper.stdout.on('data', c => { out += c; });
+    const marker = content ? '"init"' : 'boot';
+    wrapper.stdin.write(JSON.stringify(content ? { type: 'user', session_id: 'native-' + content, message: { role: 'user', content } } : { type: 'control_request', request_id: 'boot', request: { subtype: 'initialize' } }) + '\n');
+    const deadline = Date.now() + 5000;
+    while (!out.includes(marker)) { if (Date.now() > deadline) throw new Error('wrapper produced no output'); await new Promise(r => setTimeout(r, 50)); }
+    wrapper.stdin.end(); await new Promise(r => setTimeout(r, 200)); wrapper.kill('SIGKILL'); await once(wrapper, 'exit');
+  }
+  await new Promise(r => setTimeout(r, 1000));
+  const observer = connect(s.socket); t.after(() => observer.conn.destroy()); await once(observer.conn, 'connect');
+  observer.send({ op: 'probe' }); const { sessions } = await observer.wait('ready');
+  assert.equal(sessions.length, 2);
+  for (const session of sessions) { assert.equal(session.status, 'detached'); assert.ok(alive(session.pid)); }
 });
 const input = value => ({ op: 'input', data: Buffer.from(JSON.stringify(value) + '\n').toString('base64') });
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };

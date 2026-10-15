@@ -17,6 +17,9 @@ function launchSpec(request, fallback) {
   if (bundled && process.env.CLAUDE_BACKEND_CLI && C.cliVersion(bundled) !== version) throw new Error('Configured Claude CLI differs from extension bundled version; update the CLI or remove CLAUDE_BACKEND_CLI');
   return { cli, version, args, project: C.canonical(request.project) };
 }
+function streamingInput(args) {
+  return args.some((arg, i) => arg === '--input-format=stream-json' || (arg === '--input-format' && args[i + 1] === 'stream-json'));
+}
 function nativeSessionId(args) {
   for (let i = 0; i < args.length; i++) {
     if (['--resume', '-r', '--session-id'].includes(args[i])) return args[i + 1];
@@ -45,14 +48,16 @@ async function serve(project, socket, file) {
     cli, version, hostname: os.hostname(), jobId: process.env.SLURM_JOB_ID,
     pid: process.pid, startTicks: C.processIdentity(process.pid), status: 'starting' };
   C.writeJson(file, descriptor);
-  const idleGrace = Number(process.env.CLAUDE_BACKEND_DETACH_GRACE_SECONDS ?? 1800) * 1000;
+  // Detached sessions live until the allocation ends unless an idle grace is configured.
+  const graceSetting = process.env.CLAUDE_BACKEND_DETACH_GRACE_SECONDS;
+  const idleGrace = graceSetting ? Number(graceSetting) * 1000 : null;
   const record = session => C.writeJson(path.join(session.receipt.journalDir, 'session.json'), session.receipt);
   // A detached native process keeps stdin open so a later window can reattach.
-  // Only an idle detached process (no submitted turn, no background task) is
-  // closed, after a grace period; native stdin EOF then ends it normally.
+  // With an idle grace configured, an idle detached process (no submitted
+  // turn, no background task) is closed after it; native stdin EOF ends it.
   const reviewIdle = session => {
     clearTimeout(session.idleTimer); session.idleTimer = null;
-    if (session.attached || session.stdinEnded || session.pending || session.tasks.size) return;
+    if (idleGrace === null || session.attached || session.stdinEnded || session.pending || session.tasks.size) return;
     session.idleTimer = setTimeout(() => {
       if (!session.attached && !session.pending && !session.tasks.size) { session.stdinEnded = true; session.child.stdin.end(); }
     }, idleGrace);
@@ -76,7 +81,7 @@ async function serve(project, socket, file) {
     const journals = Object.fromEntries(['stdout', 'stderr'].map(name => [name, fs.createWriteStream(path.join(journalDir, name + '.log'), { flags: 'ax', mode: 0o600 })]));
     const child = spawn(spec.cli, spec.args, { cwd: spec.project, env: launchEnvironment(request.env, request.hostname === os.hostname()), stdio: ['pipe', 'pipe', 'pipe'] });
     const receipt = { id, pid: child.pid, project: spec.project, cli: spec.cli, version: spec.version, nativeId: spec.nativeId, status: 'starting', journalDir };
-    const session = { child, receipt, nativeId: spec.nativeId, pending: 0, tasks: new Set(), inputBuffer: '', outputBuffer: '', attached: connection, send, stdinEnded: false, idleTimer: null };
+    const session = { child, receipt, nativeId: spec.nativeId, streaming: streamingInput(spec.args), pending: 0, tasks: new Set(), inputBuffer: '', outputBuffer: '', attached: connection, send, stdinEnded: false, idleTimer: null };
     session.closed = new Promise(resolve => child.once('close', resolve));
     sessions.set(id, session);
     const inspectLines = (kind, chunk) => {
@@ -153,7 +158,15 @@ async function serve(project, socket, file) {
         if (request.op === 'input') {
           const chunk = Buffer.from(request.data, 'base64'); session.inspectInput(chunk);
           if (!session.child.stdin.write(chunk)) { connection.pause(); session.child.stdin.once('drain', () => connection.resume()); }
-        } else if (request.op === 'eof') { session.stdinEnded = true; session.child.stdin.end(); }
+        } else if (request.op === 'eof') {
+          // A vanished client (Tunnel/extension host gone, computer off) closes
+          // its stdin before the connection drops. Native stdin EOF would make
+          // the CLI wind down and kill background work after its print-mode
+          // cap, so interactive sessions detach instead and live until the
+          // allocation ends (or an explicitly configured idle grace).
+          if (session.streaming) detach(session, connection);
+          else { session.stdinEnded = true; session.child.stdin.end(); }
+        }
         else if (request.op === 'detach') detach(session, connection);
         else if (request.op === 'signal' && request.signal === 'SIGINT') session.child.kill('SIGINT');
         // Window reload/close terminates the client with TERM/HUP; that is a
@@ -178,5 +191,5 @@ async function serve(project, socket, file) {
   for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.once(signal, stop);
   return { server, stop, descriptor };
 }
-module.exports = { serve, launchSpec, launchEnvironment, nativeSessionId };
+module.exports = { serve, launchSpec, launchEnvironment, nativeSessionId, streamingInput };
 if (require.main === module) serve(...process.argv.slice(2)).catch(error => { console.error(`claude-backend: ${error.message}`); process.exitCode = 1; });
