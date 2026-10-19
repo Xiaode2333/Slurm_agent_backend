@@ -12,8 +12,57 @@ def test_one_cpu_no_gpu_and_local_check_root(script):
     for directive in ('--partition=agent', '--ntasks=1', '--cpus-per-task=1', '--mem=8G', '--time=7-00:00:00'):
         assert directive in source
     assert '--gres' not in source and 'pi_co54' not in source
-    assert 'if [[ "${1:-}" == check ]]' in source
+    assert '"${1:-}" == check' in source
     subprocess.run(['bash', '-n', str(ROOT / 'scripts' / script)], check=True)
+
+@pytest.mark.parametrize('script', ['agent_tmux_server_claude.sh', 'agent_tmux_server_both.sh'])
+@pytest.mark.parametrize('launch', ['local-check', 'spooled', 'spooled-relative', 'explicit-root'])
+def test_launcher_separates_source_checkout_from_submission_project(tmp_path, script, launch):
+    import shutil
+    checkout = tmp_path / 'backend source'
+    scripts = checkout / 'scripts'
+    allocation = scripts / 'claude_backend' / 'allocation.sh'
+    allocation.parent.mkdir(parents=True)
+    allocation.write_text('#!/bin/bash\nprintf "%s\\n" "$@"\n')
+    original = scripts / script
+    shutil.copyfile(ROOT / 'scripts' / script, original)
+    project = tmp_path / 'different project'
+    project.mkdir()
+    spool = tmp_path / 'slurm spool'
+    spool.mkdir()
+    copied = spool / 'slurm_script'
+    shutil.copyfile(original, copied)
+    tools = tmp_path / 'bin'
+    tools.mkdir()
+    scontrol = tools / 'scontrol'
+    command = Path(os.path.relpath(original, project)) if launch == 'spooled-relative' else original
+    scontrol.write_text(
+        '#!/bin/bash\n'
+        '[[ "$*" == "show job 99119" ]] || exit 3\n'
+        f'printf "   Command=%s\\n   WorkDir=%s\\n" "{command}" "{project}"\n'
+        f'touch "{tmp_path / "queried"}"\n'
+    )
+    scontrol.chmod(0o700)
+    env = {key: value for key, value in os.environ.items()
+           if key not in ('AGENT_BACKEND_SOURCE_ROOT', 'AGENT_BACKEND_PROJECT',
+                          'CLAUDE_BACKEND_PROJECT', 'SLURM_JOB_ID', 'SLURM_SUBMIT_DIR')}
+    env.update(PATH=f'{tools}:{os.environ["PATH"]}', SLURM_SUBMIT_DIR=str(project))
+    args = ['bash', str(copied)]
+    if launch == 'local-check':
+        args = ['bash', str(original), 'check']
+    else:
+        env['SLURM_JOB_ID'] = '99119'
+    if launch == 'explicit-root':
+        env['AGENT_BACKEND_SOURCE_ROOT'] = str(checkout)
+    result = subprocess.run(args, cwd=project, env=env, capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    expected_project = checkout if launch == 'local-check' else project
+    assert result.stdout.splitlines() == [
+        'both' if 'both' in script else 'claude', str(checkout), str(expected_project),
+        'check' if launch == 'local-check' else '',
+    ]
+    assert (tmp_path / 'queried').exists() == launch.startswith('spooled')
+
 
 @pytest.mark.parametrize('mode,failed,code', [('claude', 'claude', 7), ('both', 'claude', 6), ('both', 'codex', 9), ('both', 'claude', 0)])
 def test_backend_exit_wakes_allocation_and_cleans_only_own_tmux(tmp_path, mode, failed, code):

@@ -10,11 +10,27 @@
 #SBATCH --job-name=agent-claude
 set -euo pipefail
 script_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-if [[ "${1:-}" == check ]]; then
-    backend_root="${AGENT_BACKEND_SOURCE_ROOT:-$script_root}"
-else
-    backend_root="${AGENT_BACKEND_SOURCE_ROOT:-${SLURM_SUBMIT_DIR:-$script_root}}"
+backend_root="${AGENT_BACKEND_SOURCE_ROOT:-}"
+if [[ -z "$backend_root" ]]; then
+    if [[ "${1:-}" == check || -r "$script_root/scripts/claude_backend/allocation.sh" ]]; then
+        backend_root="$script_root"
+    elif [[ -n "${SLURM_JOB_ID:-}" ]]; then
+        # sbatch runs a spool copy: BASH_SOURCE is not the submitted script.
+        # Command retains the original script path (possibly relative to submit cwd).
+        job_details="$(scontrol show job "$SLURM_JOB_ID")" || {
+            echo 'Cannot resolve submitted script; set AGENT_BACKEND_SOURCE_ROOT' >&2; exit 2;
+        }
+        submitted_script="$(printf '%s\n' "$job_details" | awk '/^[[:space:]]*Command=/ {sub(/^[[:space:]]*Command=/, ""); print; exit}')"
+        [[ -n "$submitted_script" && "$submitted_script" != '(null)' ]] || { echo 'Missing Slurm Command; set AGENT_BACKEND_SOURCE_ROOT' >&2; exit 2; }
+        [[ "$submitted_script" == /* ]] || submitted_script="${SLURM_SUBMIT_DIR:?}/$submitted_script"
+        backend_root="$(cd -- "$(dirname -- "$submitted_script")/.." && pwd -P)"
+    else
+        echo 'Cannot locate backend checkout; set AGENT_BACKEND_SOURCE_ROOT' >&2; exit 2
+    fi
 fi
 backend_root="$(cd -- "$backend_root" && pwd -P)"
-project="$(cd -- "${CLAUDE_BACKEND_PROJECT:-${AGENT_BACKEND_PROJECT:-$backend_root}}" && pwd -P)"
+[[ -r "$backend_root/scripts/claude_backend/allocation.sh" ]] || { echo "Invalid backend checkout: $backend_root" >&2; exit 2; }
+project_default="$backend_root"
+[[ "${1:-}" == check ]] || project_default="${SLURM_SUBMIT_DIR:-$backend_root}"
+project="$(cd -- "${CLAUDE_BACKEND_PROJECT:-${AGENT_BACKEND_PROJECT:-$project_default}}" && pwd -P)"
 exec bash "$backend_root/scripts/claude_backend/allocation.sh" claude "$backend_root" "$project" "${1:-}"

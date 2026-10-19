@@ -29,6 +29,9 @@ CLAUDE_BACKEND_JOB=JOB_ID /absolute/Slurm_agent_backend/scripts/connect_claude_b
 连接后打开新的 Claude tab。默认自动使用该扩展自带的 CLI 版本；已有进程保持
 原版本。跨节点使用严格验证的 SSH。已有 Codex backend 不会被重启或取消。
 同项目已有 Codex SQLite lease 时，请等原作业结束后再启动双 backend，或使用另一个项目。
+也可以从目标项目目录直接执行
+`sbatch ../Slurm_agent_backend/scripts/agent_tmux_server_both.sh`；源码从提交脚本路径定位，
+项目默认使用提交目录，无需设置 `AGENT_BACKEND_SOURCE_ROOT`。
 详见 [Claude backend](docs/claude_backend.md) 的连接、断线恢复与资源说明。
 
 ## 已验证的版本

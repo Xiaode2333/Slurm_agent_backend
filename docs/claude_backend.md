@@ -35,7 +35,23 @@ preferred CPU lane. Neither script requests a GPU or uses the `pi_co54` partitio
 The `agent` partition permits only two concurrent jobs per user; a combined
 backend takes one slot, and a separate Tunnel can take the other.
 
-To submit from another directory or serve a different project:
+Both launchers also accept a relative or absolute script path from another
+project directory, without setting a source-root override:
+
+```bash
+cd /absolute/project
+sbatch ../Slurm_agent_backend/scripts/agent_tmux_server_both.sh
+```
+
+The source checkout is resolved from the submitted script's path (Slurm's
+`Command` when running its spool copy, resolving relative paths against the
+submission directory), not by treating the submission directory as source. The
+project defaults to the submission directory; scheduler-neutral `check` defaults
+to the checkout and does not query Slurm. Paths containing spaces are supported.
+Keep the checkout available on the compute node. An unavailable Slurm command
+record fails with an explicit source-root override hint.
+
+To override source discovery or serve a different project:
 
 ```bash
 export AGENT_BACKEND_SOURCE_ROOT=/absolute/Slurm_agent_backend
