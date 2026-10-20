@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
-# ALLOW_SBATCH: this explicitly invoked, zero-GPU service is authorized by the user.
-# The agent partition allows at most 2 concurrent jobs per user:
-#   sbatch scripts/agent_tmux_tunnel.sh   # job 1: VS Code tunnel only
-#   sbatch scripts/agent_tmux_server.sh   # job 2: codex backend only
-# Both share the node when possible so the tunnel can reach the backend socket.
-#SBATCH --partition=agent
+# Grace Codex backend on the shared CPU partition; no GPU/group partition.
+# Submit vscode_slurm_grace.sh separately for a Tunnel (SSH across nodes).
+#SBATCH --partition=week
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=8G
@@ -13,19 +10,38 @@
 #SBATCH --open-mode=append
 #SBATCH --job-name=agent-server
 set -euo pipefail
-# Slurm spools this script, so BASH_SOURCE cannot locate the repository in a job.
-backend_root="${CODEX_BACKEND_ROOT:-${SLURM_SUBMIT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}}"
-project="$(cd -- "${SLURM_SUBMIT_DIR:-$backend_root}" && pwd -P)"
+script_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+backend_root="${AGENT_BACKEND_SOURCE_ROOT:-${CODEX_BACKEND_ROOT:-}}"
+if [[ -z "$backend_root" ]]; then
+    if [[ "${1:-}" == check || -r "$script_root/scripts/codex_backend/setup.sh" ]]; then
+        backend_root="$script_root"
+    elif [[ -n "${SLURM_JOB_ID:-}" ]]; then
+        # Recover the original script path, not Slurm's spool copy or project cwd.
+        job_details="$(scontrol show job "$SLURM_JOB_ID")" || {
+            echo 'Cannot resolve submitted script; set AGENT_BACKEND_SOURCE_ROOT' >&2; exit 2;
+        }
+        submitted_script="$(printf '%s\n' "$job_details" | awk '/^[[:space:]]*Command=/ {sub(/^[[:space:]]*Command=/, ""); print; exit}')"
+        [[ -n "$submitted_script" && "$submitted_script" != '(null)' ]] || { echo 'Missing Slurm Command; set AGENT_BACKEND_SOURCE_ROOT' >&2; exit 2; }
+        [[ "$submitted_script" == /* ]] || submitted_script="${SLURM_SUBMIT_DIR:?}/$submitted_script"
+        backend_root="$(cd -- "$(dirname -- "$submitted_script")/.." && pwd -P)"
+    else
+        echo 'Cannot locate backend checkout; set AGENT_BACKEND_SOURCE_ROOT' >&2; exit 2
+    fi
+fi
+backend_root="$(cd -- "$backend_root" && pwd -P)"
+project_default="$backend_root"
+[[ "${1:-}" == check ]] || project_default="${SLURM_SUBMIT_DIR:-$backend_root}"
+project="$(cd -- "${AGENT_BACKEND_PROJECT:-$project_default}" && pwd -P)"
 export PATH="$HOME/.local/share/pi-node/current/bin:$HOME/.local/bin:$PATH"
 export CODEX_BACKEND_CLUSTER=grace
 CODEX_BIN="${CODEX_BACKEND_CLI:-$HOME/.local/bin/codex}"
-for tool in node npm tmux flock zip; do
+source "$backend_root/scripts/codex_backend/runtime.sh"
+for tool in npm tmux flock zip; do
     command -v "$tool" >/dev/null || { echo "Missing required command: $tool" >&2; exit 2; }
 done
-[[ "$(node --version)" == v22.* ]] || { echo 'This backend requires Node 22' >&2; exit 2; }
 [[ -f "$backend_root/scripts/codex_backend/setup.sh" ]] || { echo "Backend scripts not found: $backend_root" >&2; exit 2; }
 [[ -x "$CODEX_BIN" ]] || { echo "Missing Codex CLI: $CODEX_BIN" >&2; exit 2; }
-node -e 'console.log("Codex CLI " + require(process.argv[1]).checkCli())' "$backend_root/scripts/codex_backend/common.cjs"
+"$node_bin" -e 'console.log("Codex CLI " + require(process.argv[1]).checkCli())' "$backend_root/scripts/codex_backend/common.cjs"
 if [[ "${1:-}" == check ]]; then
     echo "Grace backend prerequisites OK; project=$project"
     exit 0

@@ -110,19 +110,30 @@ bash /absolute/Slurm_agent_backend/scripts/connect_codex_backend.sh status
 Grace 使用 standalone CLI（`~/.local/bin/codex`）和独立入口；两者都自动检测版本：
 
 ```bash
-# 在 Slurm_agent_backend 仓库根目录提交；先确认目标集群为 Grace。
-bash scripts/agent_tmux_server_grace.sh check
-sbatch scripts/agent_tmux_server_grace.sh
+# 先确认目标集群为 Grace；以下入口均使用共享 week CPU 分区。
+bash scripts/agent_tmux_server_both_grace.sh check
+sbatch scripts/agent_tmux_server_both_grace.sh  # Codex + Claude，共用一个 allocation
+# 或只选一个后端（不要为同一项目同时启动 Codex-only 和 both）：
+# sbatch scripts/agent_tmux_server_grace.sh
+# sbatch scripts/agent_tmux_server_claude_grace.sh
 sbatch scripts/vscode_slurm_grace.sh
 # 在目标项目的 VS Code Tunnel 集成终端中：
 CODEX_BACKEND_JOB=JOB_ID /absolute/Slurm_agent_backend/scripts/connect_codex_backend_grace.sh
+CLAUDE_BACKEND_JOB=JOB_ID /absolute/Slurm_agent_backend/scripts/connect_claude_backend_grace.sh
 ```
 
-Grace Tunnel 默认使用共享 `week` CPU 分区；不要未经容量核查改投 GPU/group 分区。
-资源、account/QOS 可通过 `sbatch` 显式覆盖。Tunnel 和后端允许不同节点，
-条件是共享私有组件/后端注册目录，并支持具有可信 host key 的 batch-mode SSH。
-提交后端时如仓库不在提交目录，显式设置 `CODEX_BACKEND_ROOT`。
-`VSCODE_BIN` 可覆盖 Grace 的站点 VS Code CLI 路径。
+Grace 的所有上述作业入口默认使用共享 `week` CPU 分区、1 CPU、7 天、零 GPU；
+后端 8 GiB，Tunnel 32 GiB。双后端共享一个 CPU，建议同一时间只运行一个 harness。
+不要未经容量核查改投 GPU/group 分区；资源、account/QOS 可通过 `sbatch` 显式覆盖。
+Tunnel 和后端允许不同节点，条件是共享私有组件/后端注册目录，并支持具有可信 host key 的 batch-mode SSH。
+这些 Grace 作业入口支持从目标项目目录直接提交绝对或相对脚本路径；Slurm spool
+运行时从 `scontrol show job` 的 `Command` 恢复源码目录，不再把目标项目当成源码目录。
+也可显式设置 `AGENT_BACKEND_SOURCE_ROOT`（兼容 `CODEX_BACKEND_ROOT`）指定仓库，
+`AGENT_BACKEND_PROJECT` 指定项目；默认项目是提交目录。`check` 默认检查仓库，
+不提交作业，也不验证调度权限或跨节点 SSH。Tunnel 同样支持 `check`。
+`VSCODE_BIN` 可覆盖 Grace 的站点 VS Code CLI 路径；Claude 自动查找
+`~/.local/bin/claude`，也可用 `CLAUDE_BACKEND_CLI` 指定可执行文件。
+Grace 入口不会更改 Bouchet 的无后缀脚本，也不会重启现有后端。
 
 公共组件在 Grace 完整主机名上自动选择 Grace，其余主机保留 Bouchet 默认。
 短主机名或自定义安装可显式导出 `CODEX_BACKEND_CLUSTER=bouchet|grace`、

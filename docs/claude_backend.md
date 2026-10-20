@@ -35,6 +35,14 @@ preferred CPU lane. Neither script requests a GPU or uses the `pi_co54` partitio
 The `agent` partition permits only two concurrent jobs per user; a combined
 backend takes one slot, and a separate Tunnel can take the other.
 
+On **Grace**, use `agent_tmux_server_claude_grace.sh` or
+`agent_tmux_server_both_grace.sh` and `connect_claude_backend_grace.sh` instead.
+These default to the shared `week` CPU partition (one CPU, 8 GiB, seven days),
+select Grace's standalone Codex CLI for combined mode, and include the user
+`pi-node`/local CLI paths. Use `vscode_slurm_grace.sh` for a separate Tunnel.
+See [Grace entry points](../README.md#bouchet--grace-兼容入口) for commands and overrides.
+Local `check` validates installed prerequisites only, not scheduling or SSH.
+
 Both launchers also accept a relative or absolute script path from another
 project directory, without setting a source-root override:
 

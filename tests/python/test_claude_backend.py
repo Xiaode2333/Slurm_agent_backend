@@ -6,16 +6,19 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 
-@pytest.mark.parametrize('script', ['agent_tmux_server_claude.sh', 'agent_tmux_server_both.sh'])
+@pytest.mark.parametrize('script', ['agent_tmux_server_claude.sh', 'agent_tmux_server_both.sh',
+                                    'agent_tmux_server_claude_grace.sh', 'agent_tmux_server_both_grace.sh'])
 def test_one_cpu_no_gpu_and_local_check_root(script):
     source = (ROOT / 'scripts' / script).read_text()
-    for directive in ('--partition=agent', '--ntasks=1', '--cpus-per-task=1', '--mem=8G', '--time=7-00:00:00'):
+    partition = 'week' if '_grace.sh' in script else 'agent'
+    for directive in (f'--partition={partition}', '--ntasks=1', '--cpus-per-task=1', '--mem=8G', '--time=7-00:00:00'):
         assert directive in source
     assert '--gres' not in source and 'pi_co54' not in source
     assert '"${1:-}" == check' in source
     subprocess.run(['bash', '-n', str(ROOT / 'scripts' / script)], check=True)
 
-@pytest.mark.parametrize('script', ['agent_tmux_server_claude.sh', 'agent_tmux_server_both.sh'])
+@pytest.mark.parametrize('script', ['agent_tmux_server_claude.sh', 'agent_tmux_server_both.sh',
+                                    'agent_tmux_server_claude_grace.sh', 'agent_tmux_server_both_grace.sh'])
 @pytest.mark.parametrize('launch', ['local-check', 'spooled', 'spooled-relative', 'explicit-root'])
 def test_launcher_separates_source_checkout_from_submission_project(tmp_path, script, launch):
     import shutil
@@ -45,7 +48,7 @@ def test_launcher_separates_source_checkout_from_submission_project(tmp_path, sc
     scontrol.chmod(0o700)
     env = {key: value for key, value in os.environ.items()
            if key not in ('AGENT_BACKEND_SOURCE_ROOT', 'AGENT_BACKEND_PROJECT',
-                          'CLAUDE_BACKEND_PROJECT', 'SLURM_JOB_ID', 'SLURM_SUBMIT_DIR')}
+                          'CLAUDE_BACKEND_PROJECT', 'CODEX_BACKEND_ROOT', 'SLURM_JOB_ID', 'SLURM_SUBMIT_DIR')}
     env.update(PATH=f'{tools}:{os.environ["PATH"]}', SLURM_SUBMIT_DIR=str(project))
     args = ['bash', str(copied)]
     if launch == 'local-check':
