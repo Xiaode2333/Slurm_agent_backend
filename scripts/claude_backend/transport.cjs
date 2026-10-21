@@ -44,6 +44,9 @@ async function select(project, env = process.env) {
       const file = path.join(dir, name), d = C.readJson(file); C.validate(d, false);
       if (env.CLAUDE_BACKEND_JOB && d.jobId !== env.CLAUDE_BACKEND_JOB) continue;
       if (env.CLAUDE_BACKEND_HOST && d.hostname !== env.CLAUDE_BACKEND_HOST) continue;
+      // Resolve under this registry's guard: a retired mount must not abort
+      // discovery of a healthy backend registered on the current filesystem.
+      C.canonical(d.project);
       candidates.push({ file, descriptor: d });
     } catch { /* Ignore expired/invalid registries. */ }
   }

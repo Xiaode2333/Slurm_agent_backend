@@ -32,6 +32,24 @@ test('multiple projects select one backend without changing its descriptor', asy
   assert.equal(C.selectBackend({ root, project: second, env: { CODEX_BACKEND_JOB: '43' } }).descriptor.jobId, '43');
 });
 
+test('a missing registry project cannot hide a healthy same-node backend', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-moved-project-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const socket = path.join(root, 'app.sock'), server = net.createServer();
+  await new Promise(resolve => server.listen(socket, resolve)); fs.chmodSync(socket, 0o600);
+  t.after(() => server.close());
+  const descriptor = { schema: 'codex_backend_v1', status: 'ready', id: 'live', project: root, socket,
+    cli: C.CLI, version: C.CLI_VERSION, hostname: os.hostname(), jobId: '42', pid: process.pid, startTicks: C.processIdentity(process.pid) };
+  const stale = path.join(root, 'backends', 'old.json');
+  C.writeJson(stale, { ...descriptor, jobId: '41', project: path.join(root, 'retired-mount', 'project') });
+  const before = fs.readFileSync(stale, 'utf8');
+  const live = path.join(root, 'backends', 'new.json'); C.writeJson(live, descriptor);
+  assert.equal(C.selectBackend({ root, project: root, env: {} }).file, live);
+  assert.equal(fs.readFileSync(stale, 'utf8'), before, 'discovery must not rewrite old registrations');
+  fs.unlinkSync(live);
+  assert.throws(() => C.selectBackend({ root, project: root, env: {} }), /found 0/);
+});
+
 test('dispatcher bindings isolate extension hosts and ignore stale process identities', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-dispatch-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

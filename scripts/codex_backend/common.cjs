@@ -98,6 +98,9 @@ function selectBackend({ root = stateRoot(), project, env = process.env, host = 
           (env.CODEX_BACKEND_HOST && value.hostname !== env.CODEX_BACKEND_HOST) || !value.project) continue;
       if (job && value.jobId === job) knownAllocation = true;
       validateDescriptor(value, project, host, { allowShared: true });
+      // A retired mount or deleted project makes this registry stale. Resolve
+      // inside the per-descriptor guard, not the unguarded preference filter.
+      canonical(value.project);
       candidates.push({ file, descriptor: value });
     } catch (error) { errors.push(`${name}: ${error.message}`); }
   }

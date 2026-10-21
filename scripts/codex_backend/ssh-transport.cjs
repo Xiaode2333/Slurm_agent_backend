@@ -120,6 +120,9 @@ async function resolveBackend({ project, root = C.stateRoot(), env = process.env
           d.cli !== C.CLI || !C.isCliVersion(d.version) || !d.project ||
           (env.CODEX_BACKEND_JOB && d.jobId !== env.CODEX_BACKEND_JOB) ||
           (env.CODEX_BACKEND_HOST && d.hostname !== env.CODEX_BACKEND_HOST)) continue;
+      // Old registrations can outlive a filesystem transfer. Ignore an
+      // unavailable startup project before computing project preferences.
+      C.canonical(d.project);
       candidates.push({ file, descriptor: d });
     } catch (error) { errors.push(`${name}: ${error.message}`); }
   }

@@ -87,6 +87,22 @@ test('private registries reject symlinks and stale PID identities', t => {
   const link = path.join(dir, 'link'); fs.symlinkSync(file, link); assert.throws(() => C.readJson(link), /private/);
   assert.throws(() => C.validate({ schema: 'claude_backend_v1', status: 'ready', hostname: os.hostname(), jobId: '1', socket: '/tmp/file', component: dir, pid: process.pid, startTicks: 'wrong' }), /Stale/);
 });
+test('missing registry projects do not block selection of a live Claude backend', async t => {
+  const s = await service(t), T = require('../transport.cjs');
+  const originalRoot = C.root; C.root = () => s.dir;
+  t.after(() => { C.root = originalRoot; });
+  const live = path.join(s.dir, 'backends', 'live.json');
+  const stale = path.join(s.dir, 'backends', 'retired.json');
+  const descriptor = C.readJson(s.file);
+  C.writeJson(live, descriptor);
+  C.writeJson(stale, { ...descriptor, jobId: '99110', project: path.join(s.dir, 'retired-mount', 'project') });
+  const before = fs.readFileSync(stale, 'utf8');
+  assert.equal((await T.select(s.dir, {})).file, live);
+  assert.equal(fs.readFileSync(stale, 'utf8'), before, 'discovery must leave stale records untouched');
+  fs.unlinkSync(live);
+  await assert.rejects(T.select(s.dir, {}), /Expected one reachable Claude backend; found 0/);
+});
+
 test('native initialize JSONL passes unchanged; status does not launch a Claude process', async t => {
   const s = await service(t), client = connect(s.socket); t.after(() => client.conn.destroy());
   await once(client.conn, 'connect'); client.send({ op: 'probe' }); assert.deepEqual((await client.wait('ready')).sessions, []);

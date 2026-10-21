@@ -87,6 +87,18 @@ server.listen(local,()=>fs.chmodSync(local,0o600)); process.on('SIGTERM',()=>{fo
   await assert.rejects(T.ensure(file, { root, verifyRemote: () => { throw new Error('remote process stopped'); }, spawnSsh }), /stopped/);
 });
 
+test('remote discovery ignores registrations on missing mounts before SSH verification', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh-moved-project-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'backends', 'retired.json');
+  C.writeJson(file, { schema: 'codex_backend_v1', status: 'ready', hostname: 'retired.invalid',
+    jobId: '41', project: path.join(root, 'retired-mount', 'project'), cli: C.CLI, version: C.CLI_VERSION });
+  const before = fs.readFileSync(file, 'utf8');
+  await assert.rejects(T.resolveBackend({ root, project: root, env: {}, host: 'client.example' }),
+    /Expected one reachable SSH backend; found 0/);
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+});
+
 test('unreachable remote verification never starts a forwarding process or a fallback backend', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh-denied-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
