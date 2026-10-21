@@ -34,7 +34,9 @@ for (const openedProject of [true, false]) test(`helper connects ${openedProject
   fs.symlinkSync(installRoot, path.join(testHome, '.local/share/codex-backend'));
   const requestedComponent = C.privateDirectory(path.join(installRoot, 'a'.repeat(64)));
   fs.writeFileSync(path.join(requestedComponent, 'installed'), '');
-  const localC = { ...C, stateRoot: () => root, dispatcherLauncher: () => path.join(root, 'dispatcher.sh') };
+  let expireHistoryWait = false;
+  const localC = { ...C, stateRoot: () => root, dispatcherLauncher: () => path.join(root, 'dispatcher.sh'),
+    waitForFile: (...args) => expireHistoryWait ? Promise.reject(new Error(`Timed out waiting for ${args[0]}`)) : C.waitForFile(...args) };
   const moduleObject = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(component, 'helper/extension.cjs'), 'utf8'), {
     require(name) {
@@ -114,6 +116,19 @@ for (const openedProject of [true, false]) test(`helper connects ${openedProject
   assert.equal(commands.filter(c => c === 'workbench.action.reloadWindow').length, 1);
   assert.equal(restoredConnector.connectionStatus().mode, 'slurm');
   assert.equal(restoredConnector.connectionStatus().project, root);
+  const receiptFile = C.receiptPath(root, socket, `extension-host:${process.pid}`);
+  const completed = C.readJson(receiptFile);
+  C.writeJson(receiptFile, { ...completed, listCompleted: false });
+  assert.equal(restoredConnector.connectionStatus().verified, false, 'initialize alone is not sidebar acceptance');
+  assert.equal(restoredConnector.connectionStatus().mode, 'configured-unverified');
+  expireHistoryWait = true;
+  const blocked = { ...repeat, requestId: crypto.randomUUID() };
+  assert.equal((await restoredConnector.connect(blocked)).status, 'verifying');
+  const failure = await C.waitForFile(path.join(root, 'results', blocked.requestId + '.json'), value => value.status === 'failed', 3000);
+  assert.match(failure.error, /initialized.*sidebar history did not complete.*thread\/list/);
+  assert.match(failure.error, /frontend\/account/);
+  expireHistoryWait = false;
+  C.writeJson(receiptFile, completed);
   // The same Terminal object is reused, but its bootstrap shell/PID/hook died.
   // There is deliberately no onDidOpenTerminal event for the replacement.
   const replacement = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {

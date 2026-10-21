@@ -42,11 +42,25 @@ async function activate(context, api) {
       await official.activate();
       await vscode.commands.executeCommand('chatgpt.openSidebar');
       const receiptFile = C.receiptPath(root, descriptor.socket, `extension-host:${process.pid}`);
-      const receipt = await C.waitForFile(receiptFile, value => value.backendId === descriptor.id &&
-        value.connected && value.initialized && value.listCompleted && (!value.project || value.project === C.canonical(request.project || descriptor.project)) &&
-        /vs\s*code|chatgpt/i.test(value.client || '') && (() => {
-          try { return value.startTicks === C.processIdentity(value.pid); } catch { return false; }
-        })());
+      let receipt;
+      try {
+        receipt = await C.waitForFile(receiptFile, value => value.backendId === descriptor.id &&
+          value.connected && value.initialized && value.listCompleted && (!value.project || value.project === C.canonical(request.project || descriptor.project)) &&
+          /vs\s*code|chatgpt/i.test(value.client || '') && (() => {
+            try { return value.startTicks === C.processIdentity(value.pid); } catch { return false; }
+          })());
+      } catch (error) {
+        let progress;
+        try { progress = C.readJson(receiptFile); } catch { /* Missing evidence remains unverified. */ }
+        if (/^Timed out waiting for /.test(error.message) && progress?.backendId === descriptor.id &&
+            progress.backendPid === descriptor.pid && progress.connected && progress.initialized && !progress.listCompleted &&
+            progress.project === projectFor(value, request) && /vs\s*code|chatgpt/i.test(progress.client || '') && (() => {
+              try { return progress.startTicks === C.processIdentity(progress.pid); } catch { return false; }
+            })()) {
+          throw new Error('The official Codex extension initialized through the backend, but sidebar history did not complete (thread/list). Check Output > Codex and the Webview Developer Tools for frontend/account errors; backend restart is not needed.');
+        }
+        throw error;
+      }
       const snapshot = { threads: receipt.threadIds || [], activeIds: receipt.activeIds || [], partial: receipt.partial !== false };
       const result = { status: 'connected', jobId: descriptor.jobId, hostname: descriptor.hostname,
         backendId: descriptor.id, backendPid: descriptor.pid, connectionPid: receipt.pid,
@@ -195,7 +209,7 @@ async function activate(context, api) {
     try {
       const descriptor = C.validateDescriptor(C.readJson(selected.descriptor), selected.project, os.hostname(), { allowShared: true });
       const receipt = C.readJson(C.receiptPath(root, descriptor.socket, `extension-host:${process.pid}`));
-      const live = receipt.connected && receipt.initialized && receipt.backendId === descriptor.id &&
+      const live = receipt.connected && receipt.initialized && receipt.listCompleted && receipt.backendId === descriptor.id &&
         receipt.backendPid === descriptor.pid &&
         receipt.project === selected.project && receipt.startTicks === C.processIdentity(receipt.pid);
       const configuredForBackend = configured === context.workspaceState.get('selectedLauncher');

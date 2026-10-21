@@ -168,8 +168,16 @@ Success requires a real official-extension initialize response and a successful
 sidebar thread-list request through the relay. The command then prints the
 allocation, backend PID and bounded history-page counts from the real sidebar receipt. `sessions=>=N`
 indicates pagination, and `active_on_page` is not a total active-session count. A direct
-socket probe alone does not qualify. A missing backend, stale descriptor,
-incompatible version or ambiguous match produces an error and starts no backend.
+socket probe alone does not qualify. An initialized relay without a completed
+sidebar `thread/list` remains `configured-unverified`, even if a separate history
+probe succeeds. If sidebar verification times out after initialize, inspect
+**Output > Codex** and the Webview Developer Tools for frontend/account errors;
+this is not evidence of a failed backend. The terminal permits 180 seconds for
+reload plus the helper's 90-second verification so the helper's specific error
+is returned instead of an earlier generic result-file timeout. These budgets
+do not waive the genuine sidebar-history requirement.
+A missing backend, stale descriptor, incompatible version or ambiguous match
+produces an error and starts no backend.
 
 The sidebar's normal history list includes CLI, VS Code and app-server-created
 conversations. Open a running conversation there to resume its original thread

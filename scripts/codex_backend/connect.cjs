@@ -106,6 +106,12 @@ async function refreshHelpers(project, root = C.stateRoot()) {
   }));
   return sockets.size;
 }
+function waitForConnectionResult(requestId, root = C.stateRoot()) {
+  // The helper's 90-second sidebar wait starts only after the window reload.
+  // Allow the reload its own budget so its terminal diagnostic wins the race.
+  return C.waitForFile(path.join(root, 'results', `${requestId}.json`),
+    value => value.status === 'connected' || value.status === 'failed', 180000);
+}
 async function connect(project, action = 'connect') {
   project = C.canonical(project);
   const selected = await require('./ssh-transport.cjs').resolveBackend({ project });
@@ -170,12 +176,11 @@ async function connect(project, action = 'connect') {
   const reply = await send(helper.socket, { action: 'connect', requestId, descriptor: selected.file, project, component: requestedComponent });
   if (reply.status === 'failed') throw new Error(reply.error);
   if (reply.status === 'reloading') console.log('Applying backend connection; VS Code will reload once. The backend keeps running.');
-  const result = await C.waitForFile(path.join(C.stateRoot(), 'results', `${requestId}.json`),
-    value => value.status === 'connected' || value.status === 'failed');
+  const result = await waitForConnectionResult(requestId);
   if (result.status === 'failed') throw new Error(result.error);
   console.log(`CONNECTED project=${result.project} job=${result.jobId} node=${result.hostname} backend_pid=${result.backendPid} sessions=${result.partial ? '>=' : ''}${result.threadCount} active_on_page=${result.activeIds.length}`);
 }
-module.exports = { matchesComponent, findHelper, refreshHelpers, send, connect, installVsix };
+module.exports = { matchesComponent, findHelper, refreshHelpers, send, connect, installVsix, waitForConnectionResult };
 if (require.main === module) connect(...process.argv.slice(2)).catch(error => {
   process.stderr.write(`codex-backend: ${error.message}\n`); process.exitCode = 1;
 });

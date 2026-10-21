@@ -10,8 +10,21 @@ const { once } = require('node:events');
 const { WebSocketServer } = require('ws');
 const C = require('../common.cjs');
 const { relay, normalizeRequest } = require('../relay.cjs');
-const { findHelper } = require('../connect.cjs');
+const { findHelper, waitForConnectionResult } = require('../connect.cjs');
 const { recoverBackfill } = require('../server.cjs');
+
+test('terminal connection wait allows reload plus the helper verification deadline', async t => {
+  const result = { status: 'failed', error: 'specific helper diagnostic' };
+  t.mock.method(C, 'waitForFile', (file, predicate, timeout) => {
+    assert.equal(file, path.join('/private/state', 'results', 'reload-request.json'));
+    assert.equal(predicate({ status: 'reloading' }), false);
+    assert.equal(predicate({ status: 'connected' }), true);
+    assert.equal(predicate(result), true);
+    assert.equal(timeout, 180000, 'must exceed the helper 90000ms wait by a reload budget');
+    return Promise.resolve(result);
+  });
+  assert.equal(await waitForConnectionResult('reload-request', '/private/state'), result);
+});
 
 test('cold CLI version startup does not abort a healthy backend', t => {
   const childProcess = require('node:child_process');
