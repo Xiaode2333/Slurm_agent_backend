@@ -91,6 +91,30 @@ Live sidebar connection after a window reload remains unverified for these
 changes; installed CLI extension versions alone do not prove the loaded
 window's version or connection.
 
+## Native Claude executable lifetime, 2026-10-22
+
+Native ELF launches now use private node-local byte snapshots rather than the
+extension's shared-storage executable. The regression first failed against the
+old server because its recorded executable was the extension source itself.
+It now passes with a compiled ELF fixture: truncate/remove the original,
+exchange native JSONL with the surviving child, replace the source with a new
+version, and reattach to the original PID/version. Additional tests cover
+partial-copy cleanup, source changes during copying, private permissions,
+non-ELF launcher semantics, snapshot reuse and failure without fallback.
+The local test command requires `cc` for this tiny fixture; production does not.
+
+The complete local check passed 56 Codex/harness Node tests, 20 Claude Node tests
+and 56 Python tests, plus JavaScript/shell/Python syntax checks. An installed
+Claude Code 2.1.308 native binary also returned its expected version after being
+copied by the new helper into an isolated temporary local directory. This was
+only a version probe, not a model turn or a new backend deployment.
+
+No running user backend, immutable installed component, connection setting or
+registration was changed. The fix is source-only until a new allocation is
+started manually. Live official-panel/model acceptance with the new supervisor
+remains unverified; the regression establishes native executable isolation and
+existing transport/lifetime behavior, not a fix for all upstream Bun crashes.
+
 ## Remaining limits
 
 Native UI pagination beyond the original environment's small history list and

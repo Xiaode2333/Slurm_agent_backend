@@ -6,16 +6,17 @@ const net = require('node:net');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const C = require('./common.cjs');
-function launchSpec(request, fallback) {
+const { createExecutableStore } = require('./executable.cjs');
+function launchSpec(request, fallback, snapshot = cli => ({ cli, sourceCli: cli })) {
   if (!Array.isArray(request.args) || request.args.some(x => typeof x !== 'string' || x.includes('\0'))) throw new Error('Invalid Claude arguments');
   const args = [...request.args];
   // Official claudeProcessWrapper passes the extension's bundled executable first.
   const bundled = args[0] && path.isAbsolute(args[0]) ? args.shift() : null;
-  const cli = C.canonical(process.env.CLAUDE_BACKEND_CLI || bundled || fallback);
-  const version = C.cliVersion(cli);
+  const executable = snapshot(C.canonical(process.env.CLAUDE_BACKEND_CLI || bundled || fallback));
+  const version = C.cliVersion(executable.cli);
   if (process.env.CLAUDE_BACKEND_VERSION && version !== process.env.CLAUDE_BACKEND_VERSION) throw new Error('Explicit Claude version pin mismatch');
-  if (bundled && process.env.CLAUDE_BACKEND_CLI && C.cliVersion(bundled) !== version) throw new Error('Configured Claude CLI differs from extension bundled version; update the CLI or remove CLAUDE_BACKEND_CLI');
-  return { cli, version, args, project: C.canonical(request.project) };
+  if (bundled && process.env.CLAUDE_BACKEND_CLI && C.cliVersion(snapshot(C.canonical(bundled)).cli) !== version) throw new Error('Configured Claude CLI differs from extension bundled version; update the CLI or remove CLAUDE_BACKEND_CLI');
+  return { ...executable, version, args, project: C.canonical(request.project) };
 }
 function streamingInput(args) {
   return args.some((arg, i) => arg === '--input-format=stream-json' || (arg === '--input-format' && args[i + 1] === 'stream-json'));
@@ -41,11 +42,12 @@ function launchEnvironment(client = {}, sameNode = true) {
 async function serve(project, socket, file) {
   if (!process.env.SLURM_JOB_ID) throw new Error('Run inside a Slurm allocation');
   project = C.canonical(project);
-  const cli = C.cliPath(), version = C.cliVersion(cli);
+  const snapshot = createExecutableStore(path.dirname(socket));
+  const sourceCli = C.cliPath(), executable = snapshot(sourceCli), version = C.cliVersion(executable.cli);
   if (process.env.CLAUDE_BACKEND_VERSION && version !== process.env.CLAUDE_BACKEND_VERSION) throw new Error('Explicit Claude version pin mismatch at startup');
   const sessions = new Map(), connections = new Set();
   const descriptor = { schema: 'claude_backend_v1', project, socket, component: __dirname, node: process.execPath,
-    cli, version, hostname: os.hostname(), jobId: process.env.SLURM_JOB_ID,
+    ...executable, version, hostname: os.hostname(), jobId: process.env.SLURM_JOB_ID,
     pid: process.pid, startTicks: C.processIdentity(process.pid), status: 'starting' };
   C.writeJson(file, descriptor);
   // Detached sessions live until the allocation ends unless an idle grace is configured.
@@ -80,7 +82,7 @@ async function serve(project, socket, file) {
     const journalDir = C.privateDirectory(path.join(C.root(), 'sessions', `${descriptor.hostname}-${descriptor.jobId}`, id));
     const journals = Object.fromEntries(['stdout', 'stderr'].map(name => [name, fs.createWriteStream(path.join(journalDir, name + '.log'), { flags: 'ax', mode: 0o600 })]));
     const child = spawn(spec.cli, spec.args, { cwd: spec.project, env: launchEnvironment(request.env, request.hostname === os.hostname()), stdio: ['pipe', 'pipe', 'pipe'] });
-    const receipt = { id, pid: child.pid, project: spec.project, cli: spec.cli, version: spec.version, nativeId: spec.nativeId, status: 'starting', journalDir };
+    const receipt = { id, pid: child.pid, project: spec.project, cli: spec.cli, sourceCli: spec.sourceCli, cliSha256: spec.cliSha256, version: spec.version, nativeId: spec.nativeId, status: 'starting', journalDir };
     const session = { child, receipt, nativeId: spec.nativeId, streaming: streamingInput(spec.args), pending: 0, tasks: new Set(), inputBuffer: '', outputBuffer: '', attached: connection, send, stdinEnded: false, idleTimer: null };
     session.closed = new Promise(resolve => child.once('close', resolve));
     sessions.set(id, session);
@@ -135,7 +137,7 @@ async function serve(project, socket, file) {
         if (request.op === 'probe') { send({ op: 'ready', ...descriptor, sessions: [...sessions.values()].map(s => s.receipt) }); return; }
         if (!launched && request.op === 'spawn') {
           launched = true;
-          const spec = launchSpec(request, cli);
+          const spec = launchSpec(request, sourceCli, snapshot);
           spec.nativeId = nativeSessionId(spec.args);
           const existing = spec.nativeId && [...sessions.values()].find(s => s.nativeId === spec.nativeId && s.receipt.status !== 'exited');
           if (existing?.attached) throw new Error('This Claude session is attached to another window; close it there before resuming here');

@@ -125,6 +125,38 @@ No release number is pinned by default. Startup detects the installed CLI;
 each extension launch prefers the bundled executable supplied by that extension,
 so an extension update selects its corresponding CLI for new conversations.
 Running children keep their original executable and recorded version.
+
+Before the supervisor's version probe or a new native launch, the selected ELF
+executable is copied into a private directory beside the allocation's node-local
+socket. This is a byte copy, not a hard link or symlink to the extension. Its
+SHA-256 and source-file identity are recorded; unchanged sources reuse the same
+copy. A source replacement gets a new path/inode without overwriting or deleting
+older copies. The executable is mode `0500`, its directory is mode `0700`, and
+copies stay available for the allocation's lifetime. Budget roughly one native
+binary's size per distinct source revision in that runtime (typically hundreds
+of MiB). Snapshot/read errors fail the launch rather than falling back to the
+shared binary. No native version is silently substituted.
+
+This prevents VS Code's old-extension cleanup on a shared filesystem from
+invalidating a running Claude executable mapping (`SIGBUS`/stale file handle).
+It does not repair arbitrary Bun crashes, provider errors or allocation expiry.
+Non-ELF npm/JavaScript/shell launchers keep their original path because relocating
+them can break adjacent-package resolution; the native snapshot protection does
+not extend to their scripts or dependencies. Select a standalone native Claude
+executable when that protection is required.
+
+Backend descriptors and session receipts expose `cli` (the actual executable),
+`sourceCli` (its original resolved path), and `cliSha256` for native snapshots.
+On reattachment the existing PID, executable and version remain unchanged.
+Source updates alone never migrate an already running session.
+
+This protection takes effect only in a newly started allocation using this
+checkout. Updating source files does not upgrade a live supervisor's immutable
+component. To activate later, submit the desired launcher from this checkout
+using the commands above, then explicitly connect your window to the new job.
+There is no automatic restart, cancellation, reconnection or migration of
+existing backends; finish or stop the old allocation yourself when appropriate.
+
 `CLAUDE_BACKEND_CLI=/absolute/claude` selects an explicit CLI; if an extension
 supplies a different version, the launch fails with an actionable mismatch.
 `CLAUDE_BACKEND_VERSION` optionally enforces a version pin. This detects versions
