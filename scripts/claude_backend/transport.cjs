@@ -11,25 +11,37 @@ function remoteCommand(d, file, action) {
   C.validate(d, false);
   return [d.node, path.join(d.component, 'transport.cjs'), action, file, fingerprint(d)].map(C.quote).join(' ');
 }
-function stream(file) {
+function stream(file, { stderr = 'inherit' } = {}) {
   const d = C.readJson(file); C.validate(d, false);
   if (d.hostname === os.hostname()) {
     C.validate(d); const socket = net.createConnection(d.socket);
     return { input: socket, output: socket, close: () => socket.destroy(), opened: new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('error', reject); }) };
   }
-  const child = spawn('ssh', [...SSH, d.hostname, remoteCommand(d, file, 'bridge')], { stdio: ['pipe', 'pipe', 'inherit'] });
+  const child = spawn('ssh', [...SSH, d.hostname, remoteCommand(d, file, 'bridge')], { stdio: ['pipe', 'pipe', stderr] });
   child.stdin.on('error', () => {});
   return { input: child.stdin, output: child.stdout, close: () => child.kill(), opened: new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); }), child };
 }
 async function probe(file) {
-  const connection = stream(file);
+  // Discovery is speculative: keep failed SSH probes quiet, but retain their
+  // diagnostics for callers that explicitly probe a selected backend.
+  const connection = stream(file, { stderr: 'pipe' });
+  let diagnostic = '';
+  connection.child?.stderr.on('data', chunk => { diagnostic = (diagnostic + chunk.toString()).slice(-16384); });
   await connection.opened;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { connection.close(); reject(new Error('Claude backend probe timed out')); }, 15000);
-    const done = (error, value) => { clearTimeout(timer); connection.close(); error ? reject(error) : resolve(value); };
+    let settled = false;
+    const timer = setTimeout(() => done(new Error('Claude backend probe timed out')), 15000);
+    const done = (error, value) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); connection.close();
+      if (error) reject(diagnostic.trim() ? new Error(`${error.message}: ${diagnostic.trim()}`, { cause: error }) : error);
+      else resolve(value);
+    };
     const send = C.channel(connection.output, value => value.op === 'ready' ? done(null, value) : done(new Error(value.error || 'Unexpected probe response')));
     connection.output.once('error', error => done(error));
-    connection.output.once('end', () => done(new Error('Claude backend closed without probe response')));
+    // SSH close follows drainage of both stdout and stderr, so failed bridges
+    // from older immutable components retain their complete error message.
+    (connection.child || connection.output).once(connection.child ? 'close' : 'end', () => done(new Error('Claude backend closed without probe response')));
     // Separate SSH stdin/stdout, versus one duplex Unix socket.
     if (connection.input === connection.output) send({ op: 'probe' });
     else connection.input.write(JSON.stringify({ op: 'probe' }) + '\n');

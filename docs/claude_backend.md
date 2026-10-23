@@ -72,6 +72,9 @@ The connector uses the current directory, or `--project DIR`, to find the
 backend and validate the target VS Code workspace. It never submits a job.
 If exactly one live backend exists, other projects may use that allocation;
 multiple live candidates require `CLAUDE_BACKEND_JOB` or `CLAUDE_BACKEND_HOST`.
+Discovery quietly skips unreachable or expired registrations (including missing
+`/proc/PID/stat` on a retired worker) without deleting them. Explicit probe
+failures retain SSH diagnostics; session transport still forwards SSH stderr.
 
 The connector installs its independent helper if necessary. A newly installed
 helper may require **Developer: Reload Window** once; the command explains when.
