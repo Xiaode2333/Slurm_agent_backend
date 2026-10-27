@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const C = require('./common.cjs');
 const { createExecutableStore } = require('./executable.cjs');
+const { extensionProfile, createIdeHooks } = require('./ide-hooks.cjs');
 function launchSpec(request, fallback, snapshot = cli => ({ cli, sourceCli: cli })) {
   if (!Array.isArray(request.args) || request.args.some(x => typeof x !== 'string' || x.includes('\0'))) throw new Error('Invalid Claude arguments');
   const args = [...request.args];
@@ -39,7 +40,7 @@ function launchEnvironment(client = {}, sameNode = true) {
   if (!sameNode) { delete env.CLAUDE_CODE_SSE_PORT; delete env.CLAUDE_CODE_IDE_PORT; }
   return env;
 }
-async function serve(project, socket, file) {
+async function serve(project, socket, file, { inspectExtension = extensionProfile } = {}) {
   if (!process.env.SLURM_JOB_ID) throw new Error('Run inside a Slurm allocation');
   project = C.canonical(project);
   const snapshot = createExecutableStore(path.dirname(socket));
@@ -69,11 +70,13 @@ async function serve(project, socket, file) {
     if (!session || session.attached !== connection || session.receipt.status === 'exited') return;
     session.attached = null; session.send = null; session.receipt.status = 'detached'; session.receipt.detachedAt = new Date().toISOString();
     session.child.stdout.resume(); session.child.stderr.resume();
+    session.ideHooks.detach();
     record(session); reviewIdle(session);
   };
   const attach = (session, connection, send) => {
     clearTimeout(session.idleTimer); session.idleTimer = null;
     session.attached = connection; session.send = send;
+    session.ideHooks.attach();
     session.receipt.status = 'running'; session.receipt.reattachedAt = new Date().toISOString(); session.receipt.attachCount = (session.receipt.attachCount || 0) + 1;
     record(session);
   };
@@ -86,6 +89,13 @@ async function serve(project, socket, file) {
     const session = { child, receipt, nativeId: spec.nativeId, streaming: streamingInput(spec.args), pending: 0, tasks: new Set(), inputBuffer: '', outputBuffer: '', attached: connection, send, stdinEnded: false, idleTimer: null };
     session.closed = new Promise(resolve => child.once('close', resolve));
     sessions.set(id, session);
+    session.ideHooks = createIdeHooks({
+      profile: inspectExtension(spec, request),
+      write: chunk => child.stdin.write(chunk),
+      audit: event => fs.appendFileSync(path.join(journalDir, 'events.jsonl'), JSON.stringify({ ...event, timestamp: new Date().toISOString() }) + '\n', { mode: 0o600 }),
+      changed: state => { receipt.ideHooks = state; record(session); },
+    });
+    receipt.ideHooks = { ...session.ideHooks.state };
     const inspectLines = (kind, chunk) => {
       const prop = kind === 'input' ? 'inputBuffer' : 'outputBuffer';
       session[prop] += chunk.toString('utf8');
@@ -106,7 +116,7 @@ async function serve(project, socket, file) {
       }
       if (session[prop].length > 2 * 1024 * 1024) session[prop] = ''; // Inspection is bounded; transport is unchanged.
     };
-    session.inspectInput = chunk => inspectLines('input', chunk);
+    session.inspectInput = chunk => { session.ideHooks.input(chunk); inspectLines('input', chunk); };
     child.once('spawn', () => { receipt.status = 'running'; receipt.startTicks = C.processIdentity(child.pid); record(session); session.send?.({ op: 'started', ...receipt }); });
     child.once('error', error => { session.send?.({ op: 'error', error: error.message }); });
     child.stdin.on('error', () => {});
@@ -114,7 +124,7 @@ async function serve(project, socket, file) {
       journals[name].on('error', error => { console.error(`Claude journal: ${error.message}`); child.kill('SIGTERM'); });
       child[name].on('data', chunk => {
         if (!journals[name].write(chunk)) { child[name].pause(); journals[name].once('drain', () => child[name].resume()); }
-        if (name === 'stdout') inspectLines('output', chunk);
+        if (name === 'stdout') { session.ideHooks.output(chunk); inspectLines('output', chunk); }
         const target = session.attached;
         if (target && !session.send({ op: name, data: chunk.toString('base64') })) {
           child[name].pause(); target.once('drain', () => { if (session.attached === target) child[name].resume(); });
@@ -158,6 +168,9 @@ async function serve(project, socket, file) {
         }
         if (!session) throw new Error('Expected spawn');
         if (request.op === 'input') {
+          // A detached/replaced SDK host cannot answer callbacks or submit work
+          // into the native process now owned by another attachment.
+          if (session.attached !== connection) throw new Error('Claude client is detached; reconnect before sending input');
           const chunk = Buffer.from(request.data, 'base64'); session.inspectInput(chunk);
           if (!session.child.stdin.write(chunk)) { connection.pause(); session.child.stdin.once('drain', () => connection.resume()); }
         } else if (request.op === 'eof') {

@@ -1,5 +1,39 @@
 # Acceptance and coverage
 
+## Detached Claude IDE hooks, 2026-10-27
+
+Read-only investigation found native processes surviving Tunnel loss while
+waiting minutes for official-extension PreToolUse callbacks. The supervisor now
+recognizes the inspected Claude extension 2.1.311 by complete bundle hash,
+manifest/native version and exact SDK hook registration. Only its three
+editor-only callbacks get neutral continuation results while detached; native
+permissions, security hooks, unknown registrations, MCP and dialogs are not
+approved or bypassed. Attached behavior is unchanged. See the
+[behavior and limitations](claude_backend.md#detached-editor-only-hooks), including
+the loss of editor autosave/diagnostics while offline and the version boundary.
+
+The new integration regression fails against the previous server with
+`detached tool pipeline stalled`. It passes against the fix for socket loss,
+EOF, explicit detach and SIGTERM-style detach, including an already-pending
+hook, later offline hooks, append-only audit evidence, permission requests
+remaining pending, stale-client rejection and same-PID reattachment. Unit tests
+cover unknown bundles/registrations, security/MCP/dialog non-interference,
+callback cancellation, native denial preservation and fragmented UTF-8/JSONL.
+
+An isolated formal one-CPU verification allocation passed all 56 Codex/harness,
+33 Claude and 56 Python tests plus shell/JavaScript/Python syntax checks. A
+separate real Claude 2.1.311 model turn in that allocation initialized the exact
+SDK hooks and detached before reading a temporary fixture. Native Read finished
+successfully with one IDE callback handled offline and no pending client
+request. This verifies real native hook-response acceptance for Read; the three
+hook types and reconnection paths have fixture-based coverage, not a live
+browser-disconnection or real Edit/Write acceptance claim.
+
+The running production supervisor/native PIDs and installed component hashes
+were preserved. No connector installation, extension setting, production
+registry or running backend was changed. This is source-only until the user
+manually starts a new backend from it; existing sessions do not hot-load it.
+
 This package was extracted on 2026-10-06 from a working Slurm deployment.
 The original compatibility target was Codex CLI 0.160.1, official extension
 26.930.61225, Node 22.23.2, VS Code 1.140.0 and ws 8.22.0.

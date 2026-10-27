@@ -175,21 +175,23 @@ allocation resource variables, HOME and PATH come from the backend. Put other
 environment customization in Claude settings or the batch environment.
 
 The panel's native control requests pass unchanged, including permissions and
-SDK MCP messages. The terminal CLI's separate localhost IDE discovery port
+SDK MCP messages, except for the narrowly verified detached IDE-hook handling
+below. The terminal CLI's separate localhost IDE discovery port
 cannot be reused on a different node; cross-node launches remove those port
 variables. A localhost service configured in project MCP settings likewise
 needs a reachable endpoint or a separately configured SSH forward.
 
-Window reload, window close, Tunnel loss or a powered-off client never stops
-native work: an interactive session lives until the Slurm allocation ends.
+Window reload, window close, Tunnel loss or a powered-off client does not kill
+the native process: an interactive session lives until the Slurm allocation ends.
+Process survival alone is not a guarantee of unattended tool progress.
 VS Code terminates the wrapper with SIGTERM/SIGHUP, and a vanished client
 closes the wrapper's stdin before its connection drops. For interactive
 (`--input-format stream-json`) sessions the wrapper and supervisor treat both,
 like any connection loss, as a detach: native stdin stays open, so the CLI
 never enters its print-mode wind-down (which kills background shells after a
-fixed cap). A submitted turn and its background tasks continue, and output is
-journaled. Reopening the same conversation reattaches the new window to that
-process (its repeated SDK `initialize` is answered natively), so later turns
+fixed cap). A submitted turn and its background tasks can continue, and output
+is journaled, subject to native permission, hook and IDE-service dependencies.
+Reopening the same conversation reattaches the new window to that process (its repeated SDK `initialize` is answered natively), so later turns
 run in the same process; the new window's launch arguments are not reapplied.
 Turn interruption uses the native control request and still works; client
 signals (INT/TERM/HUP) only detach. One-shot (non-streaming) launches still receive EOF.
@@ -200,7 +202,46 @@ idle ones (no submitted turn, no running background task) with
 arrives while a process is finishing, it waits for its exit. A second window
 cannot attach to a session that is still attached elsewhere. A lost connection
 waiting for a permission/tool response remains pending until a window
-reattaches and answers it; no approvals are invented.
+reattaches and answers it; no approvals are invented. Detached clients cannot
+submit new input or stale control responses after ownership is relinquished.
+
+### Detached editor-only hooks
+
+The inspected official Claude extension 2.1.311 registers three optional SDK
+callbacks: capture pre-edit diagnostics, autosave before Read/Edit/Write, and
+collect post-edit diagnostics. Without the extension host, these can block a
+native tool call for minutes despite auto permission mode. The new supervisor
+keeps their normal behavior while attached. On detach (socket loss, EOF, or
+INT/TERM/HUP), it completes outstanding and future instances with the hooks'
+neutral `{continue: true}` result; it does not return a permission decision.
+Native permissions and user/project/managed security hooks remain authoritative.
+
+This fallback requires the exact inspected `extension.js` SHA-256, manifest and
+native version, the official VS Code entrypoint and the exact SDK registration.
+Matching a tool name, matcher or callback ID alone is insufficient. Updated or
+unknown bundles/registrations retain native behavior and may still wait for the
+client. The guard hashes one bundle at session launch to prevent a future
+security callback being mistaken for optional IDE work; review it on extension
+updates and replace it when upstream offers explicit optional-hook capability
+negotiation. Real `can_use_tool` prompts, unknown hooks, dialogs and MCP requests are
+never auto-approved or answered by this fallback. In particular, an operation
+that actually needs the editor/debugger or a human answer still needs a client.
+
+While detached, edits use saved filesystem contents; editor-buffer autosave and
+IDE diagnostics are unavailable. Save files before disconnecting. No dirty
+buffer is silently read or saved by the backend. Each neutral hook response is
+recorded in private append-only `events.jsonl` beside the native journals;
+`session.json.ideHooks` reports the recognized profile, registration, handled
+count and outstanding client requests. Pending unknown requests are not evidence
+that the backend process is stopped.
+
+These changes apply only to a supervisor started from the updated source and
+new native sessions it launches. Updating source does not alter running
+backends, installed immutable components, extension settings or live sessions.
+Stop/restart the intended allocation manually when ready; reopening a tab on an
+old supervisor does not load the fix. No connector reinstall is required solely
+for this server change.
+
 Allocation expiry still ends its processes; saved native history remains.
 Private append-only stdout/stderr journals and version/exit receipts are retained
 under `~/.local/state/claude-backend/sessions/` for diagnosis.
