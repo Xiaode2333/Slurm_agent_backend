@@ -8,6 +8,7 @@ const { spawn } = require('node:child_process');
 const C = require('./common.cjs');
 const { createExecutableStore } = require('./executable.cjs');
 const { extensionProfile, createIdeHooks } = require('./ide-hooks.cjs');
+const { createReconnect } = require('./reconnect.cjs');
 function launchSpec(request, fallback, snapshot = cli => ({ cli, sourceCli: cli })) {
   if (!Array.isArray(request.args) || request.args.some(x => typeof x !== 'string' || x.includes('\0'))) throw new Error('Invalid Claude arguments');
   const args = [...request.args];
@@ -46,7 +47,7 @@ async function serve(project, socket, file, { inspectExtension = extensionProfil
   const snapshot = createExecutableStore(path.dirname(socket));
   const sourceCli = C.cliPath(), executable = snapshot(sourceCli), version = C.cliVersion(executable.cli);
   if (process.env.CLAUDE_BACKEND_VERSION && version !== process.env.CLAUDE_BACKEND_VERSION) throw new Error('Explicit Claude version pin mismatch at startup');
-  const sessions = new Map(), connections = new Set();
+  const sessions = new Map(), finished = new Map(), connections = new Set();
   const descriptor = { schema: 'claude_backend_v1', project, socket, component: __dirname, node: process.execPath,
     ...executable, version, hostname: os.hostname(), jobId: process.env.SLURM_JOB_ID,
     pid: process.pid, startTicks: C.processIdentity(process.pid), status: 'starting' };
@@ -66,19 +67,37 @@ async function serve(project, socket, file, { inspectExtension = extensionProfil
     }, idleGrace);
     session.idleTimer.unref();
   };
-  const detach = (session, connection) => {
+  const detach = (session, connection, transient = false) => {
     if (!session || session.attached !== connection || session.receipt.status === 'exited') return;
     session.attached = null; session.send = null; session.receipt.status = 'detached'; session.receipt.detachedAt = new Date().toISOString();
     session.child.stdout.resume(); session.child.stderr.resume();
-    session.ideHooks.detach();
+    session.detachedHandled = session.receipt.ideHooks.handled;
+    clearTimeout(session.reconnectTimer);
+    // Give the same wrapper a short recovery window before treating an SSH
+    // interruption as a missing IDE host. Explicit window close/EOF is immediate.
+    if (transient && session.reconnect) {
+      session.reconnectTimer = setTimeout(() => { if (!session.attached) session.ideHooks.detach(); }, 5000);
+      session.reconnectTimer.unref();
+    } else session.ideHooks.detach();
     record(session); reviewIdle(session);
   };
   const attach = (session, connection, send) => {
     clearTimeout(session.idleTimer); session.idleTimer = null;
+    clearTimeout(session.reconnectTimer); session.detachedHandled = undefined;
     session.attached = connection; session.send = send;
     session.ideHooks.attach();
     session.receipt.status = 'running'; session.receipt.reattachedAt = new Date().toISOString(); session.receipt.attachCount = (session.receipt.attachCount || 0) + 1;
     record(session);
+  };
+  const startTransport = (session, request) => {
+    // A new SDK/window attachment invalidates the old wrapper's private token.
+    session.reconnect = request.protocol === 'resume-v1' ? createReconnect() : null;
+  };
+  const started = (session, extra = {}) => ({ op: 'started', ...session.receipt, ...extra,
+    ...(session.reconnect ? { protocol: 'resume-v1', reconnectToken: session.reconnect.token } : {}) });
+  const output = (session, frame) => {
+    const value = session.reconnect ? session.reconnect.output(frame) : frame;
+    return session.send?.(value);
   };
   const launch = (spec, request, connection, send) => {
     const id = crypto.randomUUID();
@@ -89,6 +108,7 @@ async function serve(project, socket, file, { inspectExtension = extensionProfil
     const session = { child, receipt, nativeId: spec.nativeId, streaming: streamingInput(spec.args), pending: 0, tasks: new Set(), inputBuffer: '', outputBuffer: '', attached: connection, send, stdinEnded: false, idleTimer: null };
     session.closed = new Promise(resolve => child.once('close', resolve));
     sessions.set(id, session);
+    startTransport(session, request);
     session.ideHooks = createIdeHooks({
       profile: inspectExtension(spec, request),
       write: chunk => child.stdin.write(chunk),
@@ -117,7 +137,7 @@ async function serve(project, socket, file, { inspectExtension = extensionProfil
       if (session[prop].length > 2 * 1024 * 1024) session[prop] = ''; // Inspection is bounded; transport is unchanged.
     };
     session.inspectInput = chunk => { session.ideHooks.input(chunk); inspectLines('input', chunk); };
-    child.once('spawn', () => { receipt.status = 'running'; receipt.startTicks = C.processIdentity(child.pid); record(session); session.send?.({ op: 'started', ...receipt }); });
+    child.once('spawn', () => { receipt.status = 'running'; receipt.startTicks = C.processIdentity(child.pid); record(session); session.send?.(started(session)); });
     child.once('error', error => { session.send?.({ op: 'error', error: error.message }); });
     child.stdin.on('error', () => {});
     for (const name of ['stdout', 'stderr']) {
@@ -126,16 +146,23 @@ async function serve(project, socket, file, { inspectExtension = extensionProfil
         if (!journals[name].write(chunk)) { child[name].pause(); journals[name].once('drain', () => child[name].resume()); }
         if (name === 'stdout') { session.ideHooks.output(chunk); inspectLines('output', chunk); }
         const target = session.attached;
-        if (target && !session.send({ op: name, data: chunk.toString('base64') })) {
+        const sent = output(session, { op: name, data: chunk.toString('base64') });
+        if (target && !sent) {
           child[name].pause(); target.once('drain', () => { if (session.attached === target) child[name].resume(); });
         }
       });
     }
     child.once('close', (code, signal) => {
-      clearTimeout(session.idleTimer);
+      clearTimeout(session.idleTimer); clearTimeout(session.reconnectTimer);
       receipt.status = 'exited'; receipt.code = code; receipt.signal = signal; record(session);
       for (const journal of Object.values(journals)) journal.end();
-      session.send?.({ op: 'exit', code, signal }); session.attached?.end(); sessions.delete(id);
+      output(session, { op: 'exit', code, signal }); session.attached?.end(); sessions.delete(id);
+      if (session.reconnect) {
+        // A dropped SSH connection can race the native exit frame. Retain only
+        // bounded transport state briefly, never respawn a finished process.
+        finished.set(id, session);
+        const expiry = setTimeout(() => finished.delete(id), 60000); expiry.unref();
+      }
     });
     return session;
   };
@@ -145,6 +172,23 @@ async function serve(project, socket, file, { inspectExtension = extensionProfil
     const send = C.channel(connection, request => {
       try {
         if (request.op === 'probe') { send({ op: 'ready', ...descriptor, sessions: [...sessions.values()].map(s => s.receipt) }); return; }
+        if (!launched && request.op === 'reconnect') {
+          launched = true;
+          const existing = sessions.get(request.id) || finished.get(request.id);
+          if (!existing?.reconnect || existing.reconnect.token !== request.token || existing.receipt.pid !== request.pid || existing.receipt.startTicks !== request.startTicks) throw new Error('Claude reconnect identity changed or session expired; resume from native history');
+          if (existing.detachedHandled !== undefined && existing.receipt.ideHooks.handled !== existing.detachedHandled) throw new Error('Offline IDE callbacks already settled; refusing stale SDK callback replay, resume from native history');
+          const replay = existing.reconnect.replay(request.afterSeq);
+          // Only the same private wrapper token can replace a lingering bridge.
+          const previous = existing.attached;
+          session = existing;
+          if (existing.receipt.status !== 'exited') attach(existing, connection, send);
+          else { existing.attached = connection; existing.send = send; }
+          if (previous && previous !== connection) previous.destroy();
+          send(started(existing, { reconnected: true }));
+          for (const frame of replay) send(frame);
+          if (existing.receipt.status === 'exited') connection.end();
+          return;
+        }
         if (!launched && request.op === 'spawn') {
           launched = true;
           const spec = launchSpec(request, sourceCli, snapshot);
@@ -154,8 +198,8 @@ async function serve(project, socket, file, { inspectExtension = extensionProfil
           if (existing && !existing.stdinEnded) {
             // Reattach the reloaded window to the still-running native process.
             // A repeated SDK initialize is answered natively by the same process.
-            session = existing; attach(existing, connection, send);
-            send({ op: 'started', ...existing.receipt, reattached: true });
+            session = existing; startTransport(existing, request); attach(existing, connection, send);
+            send(started(existing, { reattached: true }));
             return;
           }
           if (existing) {
@@ -167,12 +211,20 @@ async function serve(project, socket, file, { inspectExtension = extensionProfil
           return;
         }
         if (!session) throw new Error('Expected spawn');
+        // A relinquished bridge cannot send input, EOF, signals or acks into a
+        // session now owned by another attachment.
+        if (session.attached !== connection) throw new Error('Claude client is detached; reconnect before sending input');
         if (request.op === 'input') {
-          // A detached/replaced SDK host cannot answer callbacks or submit work
-          // into the native process now owned by another attachment.
-          if (session.attached !== connection) throw new Error('Claude client is detached; reconnect before sending input');
-          const chunk = Buffer.from(request.data, 'base64'); session.inspectInput(chunk);
-          if (!session.child.stdin.write(chunk)) { connection.pause(); session.child.stdin.once('drain', () => connection.resume()); }
+          if (session.receipt.status === 'exited') throw new Error('Native Claude process has exited; input was not submitted');
+          const submit = () => {
+            const chunk = Buffer.from(request.data, 'base64'); session.inspectInput(chunk);
+            if (!session.child.stdin.write(chunk)) { connection.pause(); session.child.stdin.once('drain', () => connection.resume()); }
+          };
+          if (session.reconnect) send({ op: 'input_ack', seq: session.reconnect.input(request.seq, submit) });
+          else submit();
+        } else if (request.op === 'ack') {
+          if (!session.reconnect) throw new Error('Invalid Claude acknowledgement protocol');
+          session.reconnect.acknowledge(request.seq);
         } else if (request.op === 'eof') {
           // A vanished client (Tunnel/extension host gone, computer off) closes
           // its stdin before the connection drops. Native stdin EOF would make
@@ -190,14 +242,14 @@ async function serve(project, socket, file, { inspectExtension = extensionProfil
       } catch (error) { send({ op: 'error', error: error.message }); connection.end(); }
     });
     connection.on('error', () => {});
-    connection.on('close', () => { connections.delete(connection); detach(session, connection); });
+    connection.on('close', () => { connections.delete(connection); detach(session, connection, true); });
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socket, resolve); });
   fs.chmodSync(socket, 0o600); descriptor.status = 'ready'; C.writeJson(file, descriptor);
   console.log(`CLAUDE_BACKEND_READY job=${descriptor.jobId} node=${descriptor.hostname} pid=${descriptor.pid} version=${version}`);
   const stop = () => {
     descriptor.status = 'stopped'; C.writeJson(file, descriptor);
-    for (const session of sessions.values()) { clearTimeout(session.idleTimer); session.child.kill('SIGTERM'); }
+    for (const session of sessions.values()) { clearTimeout(session.idleTimer); clearTimeout(session.reconnectTimer); session.child.kill('SIGTERM'); }
     for (const connection of connections) connection.destroy();
     server.close();
     const deadline = setTimeout(() => { for (const session of sessions.values()) session.child.kill('SIGKILL'); }, 5000); deadline.unref();

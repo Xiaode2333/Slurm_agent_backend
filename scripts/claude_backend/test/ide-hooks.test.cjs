@@ -85,12 +85,13 @@ async function until(predicate, message) {
   const deadline = Date.now() + 8000;
   while (!predicate()) { if (Date.now() > deadline) throw new Error(message); await new Promise(r => setTimeout(r, 20)); }
 }
-function client(socket) {
+function client(socket, numbered = false) {
+  let seq = 0;
   const conn = net.createConnection(socket), frames = [];
   conn.on('error', () => {});
   const send = C.channel(conn, frame => frames.push(frame));
   const output = () => frames.filter(f => f.op === 'stdout').map(f => Buffer.from(f.data, 'base64').toString()).join('');
-  return { conn, frames, send, output, input: v => send({ op: 'input', data: bytes(v).toString('base64') }) };
+  return { conn, frames, send, output, input: v => send({ op: 'input', ...(numbered ? { seq: ++seq } : {}), data: bytes(v).toString('base64') }) };
 }
 const fixtureCli = `#!/usr/bin/env node
 const fs=require('node:fs');
@@ -105,7 +106,7 @@ if(v.type==='control_response'&&['pre','save','post'].includes(v.response.reques
 }
 }});
 `;
-for (const mode of ['detach', 'eof', 'socket-close', 'signal']) test(`real supervisor: ${mode} finishes IDE hooks offline, preserves permissions and reattaches the same PID`, async t => {
+for (const mode of ['detach', 'eof', 'socket-close', 'signal', 'settled-reconnect']) test(`real supervisor: ${mode} finishes IDE hooks offline, preserves permissions and reattaches the same PID`, async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'offline-hooks-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const cli = path.join(dir, 'claude'), socket = path.join(dir, 'app.sock'), file = path.join(dir, 'descriptor.json');
@@ -118,15 +119,15 @@ for (const mode of ['detach', 'eof', 'socket-close', 'signal']) test(`real super
   let logs = ''; server.stdout.on('data', b => { logs += b; }); server.stderr.on('data', b => { logs += b; });
   t.after(async () => { if (server.exitCode === null) { server.kill('SIGTERM'); await once(server, 'exit'); } });
   await until(() => logs.includes('CLAUDE_BACKEND_READY'), 'supervisor not ready: ' + logs);
-  const first = client(socket); t.after(() => first.conn.destroy()); await once(first.conn, 'connect');
-  const spawnRequest = { op: 'spawn', project: dir, args: [cli, '--input-format=stream-json', '--resume=native-fixture'], env: {}, hostname: os.hostname() };
+  const first = client(socket, mode === 'settled-reconnect'); t.after(() => first.conn.destroy()); await once(first.conn, 'connect');
+  const spawnRequest = { op: 'spawn', ...(mode === 'settled-reconnect' ? { protocol: 'resume-v1' } : {}), project: dir, args: [cli, '--input-format=stream-json', '--resume=native-fixture'], env: {}, hostname: os.hostname() };
   first.send(spawnRequest); await until(() => first.frames.some(f => f.op === 'started'), 'native process not started');
   const started = first.frames.find(f => f.op === 'started');
   first.input(initialize()); first.input({ type: 'user', message: { role: 'user', content: 'work' } });
   await until(() => first.output().includes('"request_id":"pre"'), 'no attached PreToolUse callback');
   if (mode === 'socket-close') first.conn.destroy();
   else if (mode === 'signal') first.send({ op: 'signal', signal: 'SIGTERM' });
-  else first.send({ op: mode }); // Keep the old socket open to test stale ownership.
+  else first.send({ op: mode === 'settled-reconnect' ? 'detach' : mode }); // Keep the old socket open to test stale ownership.
   const journal = path.join(started.journalDir, 'stdout.log');
   await until(() => fs.readFileSync(journal, 'utf8').includes('all IDE callbacks finished while detached'), 'detached tool pipeline stalled');
   const receipt = () => C.readJson(path.join(started.journalDir, 'session.json'));
@@ -135,6 +136,13 @@ for (const mode of ['detach', 'eof', 'socket-close', 'signal']) test(`real super
   assert.equal(fs.readFileSync(path.join(started.journalDir, 'events.jsonl'), 'utf8').trim().split('\n').length, 3);
   let native = fs.readFileSync(path.join(dir, 'native-input.jsonl'), 'utf8');
   assert.equal(native.includes('"request_id":"permission"'), false, 'no synthetic permission response');
+  if (mode === 'settled-reconnect') {
+    const resumed = client(socket); t.after(() => resumed.conn.destroy()); await once(resumed.conn, 'connect');
+    resumed.send({ op: 'reconnect', id: started.id, pid: started.pid, startTicks: started.startTicks, token: started.reconnectToken, afterSeq: 0 });
+    await until(() => resumed.frames.some(f => f.op === 'error'), 'settled IDE callbacks were unsafely replayed');
+    assert.match(resumed.frames.find(f => f.op === 'error').error, /callbacks already settled/);
+    assert.equal(resumed.output(), ''); return;
+  }
   if (mode !== 'socket-close') {
     first.input({ type: 'control_response', response: { subtype: 'success', request_id: 'permission', response: { behavior: 'allow' } } });
     await until(() => first.frames.some(f => f.op === 'error'), 'detached client input was not rejected');

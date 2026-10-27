@@ -205,6 +205,35 @@ waiting for a permission/tool response remains pending until a window
 reattaches and answers it; no approvals are invented. Detached clients cannot
 submit new input or stale control responses after ownership is relinquished.
 
+### Transport interruptions and safe reconnect
+
+An SSH closure is a transport failure, not proof that native Claude exited.
+Updated wrappers negotiate `resume-v1` with updated supervisors. After a stream
+break they try at most four reconnects (250/500/1000/2000ms backoff, 12-second
+handshake bound per attempt), using a private token and the exact session/PID/
+process-start identity. Recovery never spawns another Claude process, replays a
+user turn blindly, answers a permission prompt, or reapplies SDK initialize.
+Numbered input is submitted once even when its acknowledgement was lost.
+Numbered output is acknowledged and replayed from a bounded 4MiB transport
+buffer; a native exit is briefly retained for 60 seconds so its actual exit code
+can survive a transport race. Private native journals remain append-only.
+
+Recovery fails explicitly if the initial launch outcome is unknown, the session
+or identity changed, the replay cursor expired, retries were exhausted, or an
+unknown/old backend does not support recovery. It never silently substitutes a
+fresh session. Explicit client close/EOF/signals and native exit are not reasons
+to reconnect. When the editor host disappears through transport loss, its
+optional IDE callbacks get a five-second recovery grace before offline handling.
+If such callbacks have already been completed offline, SDK byte replay is
+refused rather than executing a stale editor callback twice; resume through
+native history instead. This is bounded transport recovery, not allocation
+renewal, automatic native crash recovery or guaranteed recovery from any outage.
+
+If the site allows it, placing the backend on the existing Tunnel node removes
+the cross-node SSH hop altogether. Resource placement/memory remain explicit
+Slurm parameters, not settings changed by a reconnect. Existing supervisors and
+wrappers must be restarted/reconnected to load this protocol.
+
 ### Detached editor-only hooks
 
 The inspected official Claude extension 2.1.311 registers three optional SDK
@@ -213,7 +242,8 @@ collect post-edit diagnostics. Without the extension host, these can block a
 native tool call for minutes despite auto permission mode. The new supervisor
 keeps their normal behavior while attached. On detach (socket loss, EOF, or
 INT/TERM/HUP), it completes outstanding and future instances with the hooks'
-neutral `{continue: true}` result; it does not return a permission decision.
+neutral `{continue: true}` result, after the short transport recovery grace
+where applicable; it does not return a permission decision.
 Native permissions and user/project/managed security hooks remain authoritative.
 
 This fallback requires the exact inspected `extension.js` SHA-256, manifest and
@@ -238,9 +268,11 @@ that the backend process is stopped.
 These changes apply only to a supervisor started from the updated source and
 new native sessions it launches. Updating source does not alter running
 backends, installed immutable components, extension settings or live sessions.
-Stop/restart the intended allocation manually when ready; reopening a tab on an
-old supervisor does not load the fix. No connector reinstall is required solely
-for this server change.
+Start the intended replacement allocation when ready; reopening a tab on an
+old supervisor does not load a fix. For wrapper/protocol changes, run the maintained
+connector against the replacement and follow any requested window reload so new
+sessions use the updated wrapper. Server-only changes do not themselves require
+a connector reinstall.
 
 Allocation expiry still ends its processes; saved native history remains.
 Private append-only stdout/stderr journals and version/exit receipts are retained

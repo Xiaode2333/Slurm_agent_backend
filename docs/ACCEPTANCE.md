@@ -1,5 +1,35 @@
 # Acceptance and coverage
 
+## Claude transport loss and recovery, 2026-10-27
+
+Simultaneous SSH connection closures were observed while the actual supervisor
+and native Claude processes remained alive. The old wrapper surfaced this as
+native exit1. The updated wrapper/supervisor negotiate authenticated same-PID
+transport recovery, numbered/deduplicated stdin and bounded acknowledged output
+replay. Initial launch uncertainty, changed identity/token, expired replay,
+exhausted retries and already-settled offline SDK callbacks fail closed without
+spawning a new process or fabricating approvals. See the
+[protocol limits](claude_backend.md#transport-interruptions-and-safe-reconnect).
+
+The active-process lost-input-ack regression fails against the previous server.
+Real wrapper/supervisor tests with a connection-cutting proxy now cover active
+and already-exited native processes, input-ack and output loss, exactly-once
+stdin submission, no duplicated UTF-8 output, original exit-code propagation,
+unknown launch refusal, bounded unavailable-server retry and wrong-token
+rejection. Hook integration additionally refuses replay after offline IDE
+callbacks have already been settled. This proxy evidence does not identify why
+a site's SSH daemon closed a connection or establish recovery from every real
+network outage.
+
+The final isolated priority CPU verification passed 56 Codex/harness Node,
+42 Claude Node and 56 Python tests, plus all syntax checks. A separate real
+Claude 2.1.311 detached Read-only model turn still passed with the new supervisor.
+A user-authorized 40GiB/one-CPU/zero-GPU replacement allocation then started both
+services on the existing Tunnel node, eliminating the SSH hop. Actual Codex
+0.163.0 initialize/history and Claude 2.1.311 auth/SDK initialize passed. Only the
+old agent-backend allocation was canceled; the Tunnel was preserved. Backend
+readiness is distinct from a window's helper reload/connection acceptance.
+
 ## Detached Claude IDE hooks, 2026-10-27
 
 Read-only investigation found native processes surviving Tunnel loss while
