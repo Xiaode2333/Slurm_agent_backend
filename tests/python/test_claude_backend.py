@@ -7,18 +7,24 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.mark.parametrize('script', ['agent_tmux_server_claude.sh', 'agent_tmux_server_both.sh',
-                                    'agent_tmux_server_claude_grace.sh', 'agent_tmux_server_both_grace.sh'])
+                                    'agent_tmux_server_claude_grace.sh', 'agent_tmux_server_both_grace.sh',
+                                    'agent_tmux_server_both_pico54.sh'])
 def test_one_cpu_no_gpu_and_local_check_root(script):
     source = (ROOT / 'scripts' / script).read_text()
-    partition = 'week' if '_grace.sh' in script else 'agent'
-    for directive in (f'--partition={partition}', '--ntasks=1', '--cpus-per-task=1', '--mem=8G', '--time=7-00:00:00'):
+    if '_pico54.sh' in script:
+        partition, memory = 'priority,week', '20G'
+    else:
+        partition = 'week' if '_grace.sh' in script else 'agent'
+        memory = '8G'
+    for directive in (f'--partition={partition}', '--ntasks=1', '--cpus-per-task=1', f'--mem={memory}', '--time=7-00:00:00'):
         assert directive in source
     assert '--gres' not in source and 'pi_co54' not in source
     assert '"${1:-}" == check' in source
     subprocess.run(['bash', '-n', str(ROOT / 'scripts' / script)], check=True)
 
 @pytest.mark.parametrize('script', ['agent_tmux_server_claude.sh', 'agent_tmux_server_both.sh',
-                                    'agent_tmux_server_claude_grace.sh', 'agent_tmux_server_both_grace.sh'])
+                                    'agent_tmux_server_claude_grace.sh', 'agent_tmux_server_both_grace.sh',
+                                    'agent_tmux_server_both_pico54.sh'])
 @pytest.mark.parametrize('launch', ['local-check', 'spooled', 'spooled-relative', 'explicit-root'])
 def test_launcher_separates_source_checkout_from_submission_project(tmp_path, script, launch):
     import shutil
