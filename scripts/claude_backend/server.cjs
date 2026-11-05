@@ -85,6 +85,9 @@ async function serve(project, socket, file, { inspectExtension = extensionProfil
     clearTimeout(session.idleTimer); session.idleTimer = null;
     clearTimeout(session.reconnectTimer); session.detachedHandled = undefined;
     session.attached = connection; session.send = send;
+    // A lingering client's backpressure must not leave native output paused
+    // after ownership moves. Journal backpressure retains its own drain hook.
+    session.child.stdout.resume(); session.child.stderr.resume();
     session.ideHooks.attach();
     session.receipt.status = 'running'; session.receipt.reattachedAt = new Date().toISOString(); session.receipt.attachCount = (session.receipt.attachCount || 0) + 1;
     record(session);
@@ -194,12 +197,21 @@ async function serve(project, socket, file, { inspectExtension = extensionProfil
           const spec = launchSpec(request, sourceCli, snapshot);
           spec.nativeId = nativeSessionId(spec.args);
           const existing = spec.nativeId && [...sessions.values()].find(s => s.nativeId === spec.nativeId && s.receipt.status !== 'exited');
-          if (existing?.attached) throw new Error('This Claude session is attached to another window; close it there before resuming here');
+          if (existing && existing.receipt.project !== spec.project) throw new Error('Claude session belongs to a different project; resume from its original workspace');
+          if (existing?.attached && (existing.stdinEnded || !existing.streaming || !streamingInput(spec.args))) throw new Error('This Claude session is attached to another client; only streaming resumes support attachment handoff');
           if (existing && !existing.stdinEnded) {
-            // Reattach the reloaded window to the still-running native process.
-            // A repeated SDK initialize is answered natively by the same process.
+            // An open bridge proves wrapper liveness, not editor/UI liveness:
+            // Tunnel reconnection can leave the old extension host alive. The
+            // newest streaming resume owns input; never fan out SDK callbacks.
+            const previous = existing.attached, previousSend = existing.send;
             session = existing; startTransport(existing, request); attach(existing, connection, send);
-            send(started(existing, { reattached: true }));
+            send(started(existing, { reattached: true, replacedAttachment: Boolean(previous) }));
+            if (previous && previous !== connection) {
+              // Ownership and the reconnect token are already replaced. Late
+              // input/EOF/close and old-token reconnects cannot affect the child.
+              previousSend?.({ op: 'error', error: 'Claude attachment replaced by a newer resume; native work is still running in the new attachment' });
+              previous.end();
+            }
             return;
           }
           if (existing) {

@@ -199,8 +199,22 @@ Detached sessions are not closed while the allocation runs. Each keeps its
 memory, so close unneeded ones from a reattached window, or opt in to closing
 idle ones (no submitted turn, no running background task) with
 `CLAUDE_BACKEND_DETACH_GRACE_SECONDS` in the backend environment. If a resume
-arrives while a process is finishing, it waits for its exit. A second window
-cannot attach to a session that is still attached elsewhere. A lost connection
+arrives while a process is finishing, it waits for its exit. For interactive
+streaming sessions, a new resume in the same canonical workspace hands control
+to the newest attachment even if the old bridge is still open. This preserves
+the native PID, work and journals; it does not create a second native process.
+The old wrapper receives an explicit attachment-replaced error and closes,
+and its reconnect token is invalidated. Late input, EOF, signals, close events
+and reconnect attempts from that wrapper cannot affect the new owner. A receipt
+with `replacedAttachment: true` distinguishes this handoff from an ordinary
+reattachment. One-shot/non-streaming launches cannot displace an attached client;
+a different workspace cannot reattach to an existing native session.
+
+This is single-controller handoff, not simultaneous multi-writer support.
+Broadcasting SDK bytes to two independent windows would let both answer the same
+tool, permission or IDE-hook request, and their initialize/control state is not
+interchangeable. Reopening an older window's conversation can hand control back,
+but automatic transport reconnect cannot steal it back. A lost connection
 waiting for a permission/tool response remains pending until a window
 reattaches and answers it; no approvals are invented. Detached clients cannot
 submit new input or stale control responses after ownership is relinquished.
@@ -233,6 +247,26 @@ If the site allows it, placing the backend on the existing Tunnel node removes
 the cross-node SSH hop altogether. Resource placement/memory remain explicit
 Slurm parameters, not settings changed by a reconnect. Existing supervisors and
 wrappers must be restarted/reconnected to load this protocol.
+
+### A phantom "attached to another window" error
+
+Older supervisors reject any resume while a backend socket is attached. That
+socket is between the allocation and a wrapper/SSH bridge, not the visible UI.
+After a Tunnel disconnect, VS Code can retain the old extension-host process
+and wrappers while the returning UI creates another extension host. The old
+SSH streams remain healthy, so transport keepalives/reconnect do not detect the
+missing UI. This can produce the duplicate-window error with only one visible
+window; a `connected: true` wrapper receipt alone is not proof of a usable UI.
+
+Correlate the extension's launch/error log with backend session `nativeId`,
+wrapper receipts, and the wrapper PID/start identity on its actual host. Do not
+delete journals/receipts or restart all native sessions to clear the attachment.
+A confirmed obsolete wrapper can be gracefully terminated (not the native
+Claude child or extension host) to detach it, after verifying its PID/start
+identity and exact session. Reopen that conversation to reattach. Use the
+maintained supervisor from this checkout for future allocations to get the
+single-controller handoff above; editing source does not hot-patch a running
+supervisor.
 
 ### Detached editor-only hooks
 

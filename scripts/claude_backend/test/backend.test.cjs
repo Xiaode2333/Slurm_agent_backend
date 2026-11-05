@@ -163,12 +163,67 @@ test('client loss keeps the native process; a resumed window reattaches to it', 
   while (!resumed.frames.some(f => f.op === 'stdout' && Buffer.from(f.data, 'base64').toString().includes('second-init'))) {
     if (Date.now() > deadline) throw new Error('No reattached control response'); await new Promise(r => setTimeout(r, 50));
   }
-  // A second live window may not steal an attached session.
+  // One-shot/non-streaming invocations do not support attachment handoff.
   const competing = connect(s.socket); t.after(() => competing.conn.destroy()); await once(competing.conn, 'connect');
   competing.send({ op: 'spawn', project: s.dir, args: [s.cli, '--resume', 'native-id'], env: {}, hostname: os.hostname() });
-  assert.match((await competing.wait('error')).error, /attached to another window/);
+  assert.match((await competing.wait('error')).error, /only streaming resumes/);
   resumed.send({ op: 'eof' }); assert.equal((await resumed.wait('exit')).code, 0);
   assert.match(fs.readFileSync(path.join(started.journalDir, 'stdout.log'), 'utf8'), /"result":"done"/);
+});
+for (const protocol of [undefined, 'resume-v1']) test(`a new streaming resume replaces a lingering ${protocol || 'legacy'} UI bridge, preserving the PID and fencing its token`, async t => {
+  const s = await service(t), first = connect(s.socket); t.after(() => first.conn.destroy()); await once(first.conn, 'connect');
+  const request = { op: 'spawn', protocol, project: s.dir, args: [s.cli, '--input-format=stream-json', '--session-id=native-id'], env: {}, hostname: os.hostname() };
+  first.send(request); const original = await first.wait('started');
+  // The UI disappeared, but its extension host/SSH bridge never closed.
+  const second = connect(s.socket); t.after(() => second.conn.destroy()); await once(second.conn, 'connect');
+  second.send({ ...request, args: [s.cli, '--input-format=stream-json', '--resume=native-id'] });
+  const resumed = await second.wait('started');
+  assert.equal(resumed.pid, original.pid); assert.equal(resumed.id, original.id);
+  assert.equal(resumed.reattached, true); assert.equal(resumed.replacedAttachment, true);
+  if (protocol) assert.notEqual(resumed.reconnectToken, original.reconnectToken);
+  assert.match((await first.wait('error')).error, /replaced by a newer resume/);
+  // An old wrapper's reconnect must not steal ownership back or replay input.
+  const stale = connect(s.socket); t.after(() => stale.conn.destroy()); await once(stale.conn, 'connect');
+  stale.send({ op: 'reconnect', id: original.id, pid: original.pid, startTicks: original.startTicks, token: original.reconnectToken, afterSeq: 0 });
+  assert.match((await stale.wait('error')).error, /identity changed/);
+  second.send({ ...input({ type: 'control_request', request_id: 'new-ui', request: { subtype: 'initialize' } }), seq: 1 });
+  if (protocol) assert.equal((await second.wait('input_ack')).seq, 1);
+  assert.match(Buffer.from((await second.wait('stdout')).data, 'base64').toString(), /new-ui/);
+  const observer = connect(s.socket); t.after(() => observer.conn.destroy()); await once(observer.conn, 'connect');
+  observer.send({ op: 'probe' }); const { sessions } = await observer.wait('ready');
+  assert.equal(sessions.length, 1); assert.equal(sessions[0].status, 'running'); assert.ok(alive(original.pid));
+});
+test('streaming handoff refuses a different workspace without displacing the original owner', async t => {
+  const s = await service(t), first = connect(s.socket); t.after(() => first.conn.destroy()); await once(first.conn, 'connect');
+  const request = { op: 'spawn', project: s.dir, args: [s.cli, '--input-format=stream-json', '--resume=native-id'], env: {} };
+  first.send(request); const original = await first.wait('started');
+  const otherProject = path.join(s.dir, 'other'); fs.mkdirSync(otherProject);
+  const second = connect(s.socket); t.after(() => second.conn.destroy()); await once(second.conn, 'connect');
+  second.send({ ...request, project: otherProject }); assert.match((await second.wait('error')).error, /different project/);
+  first.send(input({ type: 'control_request', request_id: 'original-ui', request: { subtype: 'initialize' } }));
+  assert.match(Buffer.from((await first.wait('stdout')).data, 'base64').toString(), /original-ui/);
+  assert.ok(alive(original.pid));
+});
+test('real wrappers hand off without reconnect ping-pong or a new native process', async t => {
+  const s = await service(t);
+  const open = args => {
+    const child = cp.spawn(process.execPath, [path.join(__dirname, '../wrapper.cjs'), s.file, s.cli, '--input-format=stream-json', ...args], { env: { ...process.env, HOME: s.dir }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const state = { child, out: '', err: '' }; child.stdout.on('data', c => { state.out += c; }); child.stderr.on('data', c => { state.err += c; });
+    t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); }); return state;
+  };
+  const initialize = async (state, id) => {
+    state.child.stdin.write(JSON.stringify({ type: 'control_request', request_id: id, request: { subtype: 'initialize' } }) + '\n');
+    const deadline = Date.now() + 5000;
+    while (!state.out.includes(id)) { if (Date.now() > deadline) throw new Error('wrapper init failed: ' + state.err); await new Promise(r => setTimeout(r, 20)); }
+  };
+  const first = open(['--session-id=native-id']); await initialize(first, 'old-ui');
+  const ended = once(first.child, 'exit');
+  const second = open(['--resume=native-id']); await initialize(second, 'new-ui');
+  assert.equal((await ended)[0], 1); assert.match(first.err, /replaced by a newer resume/); assert.doesNotMatch(first.err, /transport interrupted/);
+  const receiptsDir = path.join(s.dir, '.local/state/claude-backend/receipts');
+  const receipts = fs.readdirSync(receiptsDir).map(name => C.readJson(path.join(receiptsDir, name)));
+  assert.equal(receipts.length, 2); assert.equal(receipts[0].pid, receipts[1].pid); assert.equal(receipts[0].id, receipts[1].id);
+  assert.equal(second.child.exitCode, null); assert.ok(alive(receipts[0].pid));
 });
 test('client INT/TERM/HUP signals detach instead of killing native work', async t => {
   const s = await service(t), client = connect(s.socket); t.after(() => client.conn.destroy()); await once(client.conn, 'connect');
