@@ -35,7 +35,7 @@ CLAUDE_BACKEND_JOB=JOB_ID /absolute/Slurm_agent_backend/scripts/connect_claude_b
 详见 [Claude backend](docs/claude_backend.md) 的连接、断线恢复与资源说明。
 
 本项目另提供 `scripts/agent_tmux_server_both_pico54.sh`：1 CPU、20 GiB、
-7 天、零 GPU，使用 `priority,week` CPU 分区。文件名保留项目标识，
+7 天、零 GPU，使用 `priority` CPU 分区和 account/QOS `prio_co54`。文件名保留项目标识，
 不表示使用 `pi_co54` GPU 分区；CPU-only 后端不得提交到该分区。
 此入口复用上述双后端 supervisor，支持 `bash scripts/agent_tmux_server_both_pico54.sh check`。
 共享 `check` 输出中的 8 GiB 是通用入口默认值；本入口实际请求以脚本的 20 GiB 为准。

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # ALLOW_SBATCH: explicitly invoked Codex + Claude service in one CPU allocation.
 # Both backend processes share one CPU; use one harness at a time.
-#SBATCH --partition=priority,week
+#SBATCH --partition=priority
+#SBATCH --account=prio_co54
+#SBATCH --qos=prio_co54
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=20G

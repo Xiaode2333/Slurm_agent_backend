@@ -12,7 +12,9 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_one_cpu_no_gpu_and_local_check_root(script):
     source = (ROOT / 'scripts' / script).read_text()
     if '_pico54.sh' in script:
-        partition, memory = 'priority,week', '20G'
+        partition, memory = 'priority', '20G'
+        assert '#SBATCH --account=prio_co54' in source
+        assert '#SBATCH --qos=prio_co54' in source
     else:
         partition = 'week' if '_grace.sh' in script else 'agent'
         memory = '8G'
